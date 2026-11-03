@@ -68,3 +68,21 @@ test('agenda ranges', () => {
   assert.equal(q('anything friday?'), '11/6-11/7');
   assert.equal(parseMessage('Dinner Friday 7pm?', ref).type, 'event');
 });
+
+test('smarter commands vs new events', () => {
+  const c = t => parseMessage(t, ref);
+  assert.equal(c("what's tomorrow?").arg, 'tomorrow');
+  assert.equal(c("what's friday?").arg, 'range');
+  assert.deepEqual(c('remind me 30 min before soccer'), { type: 'command', cmd: 'remind', arg: 'soccer', minutes: 30 });
+  assert.equal(c('remind me about the dentist 2 hours before').minutes, 120);
+  assert.deepEqual(c('move lunch to 1pm'), { type: 'command', cmd: 'move', arg: 'lunch', when: '1pm' });
+  assert.equal(c('move dentist thursday 3pm').when, 'thursday 3pm');
+  assert.equal(c('push lunch back half an hour').shiftMin, 30);
+  assert.equal(c('move lunch 15 min earlier').shiftMin, -15);
+  assert.equal(c('find dentist').cmd, 'find');
+  assert.equal(c('3').cmd, 'choose');
+  // These are still new events
+  assert.equal(c('Change oil Dec 12').type, 'event');
+  assert.equal(c('Soccer sat 10am remind me 1 hour before').reminderMin, 60);
+  assert.equal(c('remind me to call mom tue 3pm').title, 'Call mom');
+});

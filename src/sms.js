@@ -1,11 +1,13 @@
 'use strict';
 const config = require('./config');
 const store = require('./db');
+const chrono = require('chrono-node');
 const { parseMessage } = require('./parser');
-const { describeEvent, timeFmt, dayFmt } = require('./format');
+const { describeEvent, describeWhen, timeFmt, dayFmt } = require('./format');
 
-const HELP = 'Text an event like "Dentist tue 3pm" or "Party Sat 2-5 @ Sam\'s remind 1h". ' +
-  'Ask "what do I have Friday?" or "when is my haircut?". Other commands: TODAY, TOMORROW, WEEK, UNDO, CANCEL <name>, DAILY 7am / DAILY OFF.';
+const HELP = 'Text an event like "Dentist tue 3pm @ Main St remind 1h". Commands: ' +
+  'TODAY, TOMORROW, WEEK, "what\'s Friday?", FIND dentist, CANCEL dentist, MOVE dentist TO thu 3pm, ' +
+  'PUSH lunch BACK 30 min, REMIND ME 30 MIN BEFORE soccer, UNDO, DAILY 7am / DAILY OFF.';
 
 // ---------------------------------------------------------------------------
 // Daily agenda time: set by text ("daily 6:30am"), else DAILY_AGENDA_TIME.
@@ -78,24 +80,142 @@ function agendaText(label, events, withDay = false) {
   }).join('\n');
 }
 
+// ---------------------------------------------------------------------------
+// Finding the event a text is about ("dentist", "my dentist appt", "lunch w bob").
+// Every meaningful word must start a word in the title or location.
+// ---------------------------------------------------------------------------
+const STOP = new Set(['my', 'the', 'a', 'an', 'our', 'your', 'appt', 'appts', 'appointment', 'appointments',
+  'event', 'events', 'with', 'w', 'at', 'on', 'for', 'next', 'upcoming', 'thing']);
+const words = s => String(s || '').toLowerCase().replace(/[^a-z0-9'&]+/g, ' ').replace(/'s\b|'/g, '').split(' ').filter(Boolean);
+
+function matchEvents(query, now) {
+  let q = words(query).filter(w => !STOP.has(w));
+  if (!q.length) q = words(query);
+  if (!q.length) return [];
+  const stem = w => (w.length > 3 ? w.replace(/(?:es|s)$/, '') : w);
+  return store.upcomingEvents(now.getTime()).filter(ev => {
+    const hay = words(`${ev.title} ${ev.location || ''}`);
+    return q.every(w => hay.some(h => h.startsWith(w) || stem(h) === stem(w)));
+  });
+}
+
+// Pending numbered choice ("Which one? Reply 1-3") and the last change (for UNDO), per phone.
+const PENDING_MS = 30 * 60000;
+const jsonGet = k => { try { return JSON.parse(store.kvGet(k) || 'null'); } catch { return null; } };
+const setPending = (phone, v) => store.kvSet(`pending:${phone}`, JSON.stringify(v ? { ...v, at: Date.now() } : null));
+const getPending = phone => {
+  const p = jsonGet(`pending:${phone}`);
+  return p && Date.now() - p.at < PENDING_MS ? p : null;
+};
+const setUndo = (phone, v) => store.kvSet(`undo:${phone}`, JSON.stringify(v));
+
+function numbered(matches, verb) {
+  const list = matches.slice(0, 9);
+  return `Which one do you want to ${verb}? Reply with the number:\n` +
+    list.map((m, i) => `${i + 1}. ${describeEvent(m)}`).join('\n') +
+    (matches.length > list.length ? `\n(${matches.length - list.length} more, be more specific)` : '');
+}
+
+// ---------------------------------------------------------------------------
+// Moving an event: new time keeps the day, new day keeps the time, length is kept.
+// ---------------------------------------------------------------------------
+function moveTimes(ev, p, now) {
+  const dur = ev.end_ts - ev.start_ts;
+  if (p.shiftMin) return { all_day: ev.all_day, start_ts: ev.start_ts + p.shiftMin * 60000, end_ts: ev.end_ts + p.shiftMin * 60000 };
+  let when = p.when.trim().replace(/^at\s+/, '');
+  if (/^\d{1,2}(?::\d{2})?$/.test(when)) when += ':00'.slice(when.includes(':') ? 3 : 0); // "1" -> "1:00"
+  const r = chrono.parse(when, now, { forwardDate: true })[0];
+  if (!r) return null;
+  const dateGiven = r.start.isCertain('day') || r.start.isCertain('weekday');
+  const timeGiven = r.start.isCertain('hour');
+  if (!dateGiven && !timeGiven) return null;
+  const cur = new Date(ev.start_ts);
+  const base = dateGiven ? r.start.date() : cur;
+  const day = new Date(base.getFullYear(), base.getMonth(), base.getDate());
+  const at = (comp, d) => {
+    let h = comp.get('hour');
+    if (!comp.isCertain('meridiem') && h >= 1 && h <= 7) h += 12; // "move lunch to 1" = 1 PM
+    const out = new Date(day); out.setHours(h, comp.get('minute') || 0, 0, 0);
+    return out;
+  };
+  if (timeGiven) {
+    const start = at(r.start);
+    let end = r.end && r.end.isCertain('hour') ? at(r.end) : new Date(start.getTime() + (ev.all_day ? config.defaultDurationMin * 60000 : dur));
+    if (end <= start) end = new Date(end.getTime() + 86400000);
+    return { all_day: 0, start_ts: start.getTime(), end_ts: end.getTime() };
+  }
+  if (ev.all_day) {
+    const days = Math.round(dur / 86400000);
+    return { all_day: 1, start_ts: day.getTime(), end_ts: new Date(day.getFullYear(), day.getMonth(), day.getDate() + days).getTime() };
+  }
+  const start = new Date(day); start.setHours(cur.getHours(), cur.getMinutes(), 0, 0);
+  return { all_day: 0, start_ts: start.getTime(), end_ts: start.getTime() + dur };
+}
+
+// Apply a cancel / move / remind command to one chosen event.
+function applyTo(phone, p, ev, now) {
+  if (p.cmd === 'cancel') {
+    store.deleteEvent(ev.id);
+    setUndo(phone, { kind: 'delete', row: ev });
+    return `Cancelled: ${describeEvent(ev)}. Reply UNDO to bring it back.`;
+  }
+  if (p.cmd === 'move') {
+    const t = moveTimes(ev, p, now);
+    if (!t) return `I couldn't tell when to move ${ev.title} to. Try "move ${ev.title.toLowerCase()} to thu 3pm".`;
+    const moved = store.updateEvent(ev.id, t);
+    setUndo(phone, { kind: 'update', row: ev });
+    return `Moved: ${describeEvent(moved)} (was ${describeWhen(ev)}). Reply UNDO to put it back.`;
+  }
+  if (p.cmd === 'remind') {
+    const upd = store.updateEvent(ev.id, { reminder_min: p.minutes, phone: ev.phone || phone });
+    setUndo(phone, { kind: 'update', row: ev });
+    if (p.minutes == null) return `OK, no reminder for ${describeEvent(upd)}.`;
+    const lead = p.minutes % 1440 === 0 ? `${p.minutes / 1440} day${p.minutes === 1440 ? '' : 's'}`
+      : p.minutes % 60 === 0 ? `${p.minutes / 60} hour${p.minutes === 60 ? '' : 's'}` : `${p.minutes} min`;
+    const soon = upd.start_ts - p.minutes * 60000 <= now.getTime() ? ' That time has already passed, so you\'ll get it right away.' : '';
+    return `OK, I'll text you ${lead} before ${describeEvent(upd)}.${soon}`;
+  }
+  return HELP;
+}
+
+const VERB = { cancel: 'cancel', move: 'move', remind: 'set a reminder for' };
+
 function handleMessage(from, body, now = new Date()) {
   const phone = normalize(from);
-  const p = parseMessage(body, now, { defaultDurationMin: config.defaultDurationMin });
+  const opts = { defaultDurationMin: config.defaultDurationMin };
+  const p = parseMessage(body, now, opts);
 
   if (p.type === 'error') return p.message;
-  if (p.type === 'event') {
-    const ev = store.createEvent({
-      title: p.title, all_day: p.allDay, start_ts: p.start.getTime(), end_ts: p.end.getTime(),
-      location: p.location, reminder_min: p.reminderMin, source: 'sms', phone,
-    });
-    let reply = `Added: ${describeEvent(ev)}`;
-    if (ev.reminder_min) reply += ` (reminder ${ev.reminder_min} min before)`;
-    return reply + '. Reply UNDO to remove.';
-  }
+  if (p.type === 'event') return addEvent(phone, p);
+
+  if (p.cmd !== 'choose') setPending(phone, null); // any other text drops an open question
 
   switch (p.cmd) {
     case 'help': return HELP;
+    case 'choose': {
+      const pend = getPending(phone);
+      if (!pend) return `Not sure what "${p.arg}" is for. ${HELP}`;
+      const id = pend.ids[p.arg - 1];
+      if (!id) return `Reply with a number from 1 to ${pend.ids.length}.`;
+      setPending(phone, null);
+      const ev = store.getEvent(id);
+      if (!ev) return 'That event is gone already.';
+      return applyTo(phone, pend.cmd, ev, now);
+    }
     case 'undo': {
+      const u = jsonGet(`undo:${phone}`);
+      setUndo(phone, null);
+      if (u?.kind === 'delete' && !store.getEvent(u.row.id)) return `Restored: ${describeEvent(store.restoreEvent(u.row))}`;
+      if (u?.kind === 'update' && store.getEvent(u.row.id)) {
+        const r = u.row;
+        const back = store.updateEvent(r.id, { all_day: r.all_day, start_ts: r.start_ts, end_ts: r.end_ts, reminder_min: r.reminder_min, phone: r.phone });
+        return `Put back: ${describeEvent(back)}`;
+      }
+      if (u?.kind === 'create') {
+        const ev = store.getEvent(u.id);
+        if (ev) { store.deleteEvent(ev.id); return `Removed: ${describeEvent(ev)}`; }
+      }
+      if (u) return 'Nothing to undo.';
       const last = store.lastCreatedBy(phone);
       if (!last) return 'Nothing to undo.';
       store.deleteEvent(last.id);
@@ -131,21 +251,40 @@ function handleMessage(from, body, now = new Date()) {
       return `OK, I'll text your agenda every day at ${prettyClock(t)}.`;
     }
     case 'find': {
-      const matches = store.findUpcomingByTitle(p.arg, now.getTime());
+      const matches = matchEvents(p.arg, now);
       if (!matches.length) return `No upcoming event matching "${p.arg}".`;
-      return matches.map(m => describeEvent(m)).join('\n');
+      if (matches.length === 1) return describeEvent(matches[0]);
+      const shown = matches.slice(0, 5);
+      return shown.map(m => `- ${describeEvent(m)}`).join('\n') +
+        (matches.length > shown.length ? `\n(+${matches.length - shown.length} more)` : '');
     }
-    case 'cancel': {
-      const matches = store.findUpcomingByTitle(p.arg, now.getTime());
-      if (!matches.length) return `No upcoming event matching "${p.arg}".`;
-      if (matches.length > 1) {
-        return `Found ${matches.length} matches, be more specific:\n` + matches.map(m => `- ${describeEvent(m)}`).join('\n');
+    case 'cancel':
+    case 'move':
+    case 'remind': {
+      const matches = matchEvents(p.arg, now);
+      if (!matches.length) {
+        // "Move-in day Dec 1" is an event, not a command.
+        const ev = p.cmd !== 'remind' && parseMessage(body, now, { ...opts, eventOnly: true });
+        if (ev && ev.type === 'event') return addEvent(phone, ev);
+        return `No upcoming event matching "${p.arg}". Text FIND ${p.arg} to search.`;
       }
-      store.deleteEvent(matches[0].id);
-      return `Cancelled: ${describeEvent(matches[0])}`;
+      if (matches.length === 1) return applyTo(phone, p, matches[0], now);
+      setPending(phone, { cmd: p, ids: matches.slice(0, 9).map(m => m.id) });
+      return numbered(matches, VERB[p.cmd]);
     }
   }
   return HELP;
+}
+
+function addEvent(phone, p) {
+  const ev = store.createEvent({
+    title: p.title, all_day: p.allDay, start_ts: p.start.getTime(), end_ts: p.end.getTime(),
+    location: p.location, reminder_min: p.reminderMin, source: 'sms', phone,
+  });
+  setUndo(phone, { kind: 'create', id: ev.id });
+  let reply = `Added: ${describeEvent(ev)}`;
+  if (ev.reminder_min) reply += ` (reminder ${ev.reminder_min} min before)`;
+  return reply + '. Reply UNDO to remove.';
 }
 
 async function receive(id, from, body) {

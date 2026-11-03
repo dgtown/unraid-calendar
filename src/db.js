@@ -61,8 +61,16 @@ function updateEvent(id, patch) {
   if (patch.start_ts !== undefined || patch.reminder_min !== undefined) next.reminded = 0;
   next.updated_at = Date.now();
   db.prepare(`UPDATE events SET title=@title, all_day=@all_day, start_ts=@start_ts, end_ts=@end_ts, location=@location,
-    notes=@notes, reminder_min=@reminder_min, reminded=@reminded, updated_at=@updated_at WHERE id=@id`).run(next);
+    notes=@notes, reminder_min=@reminder_min, reminded=@reminded, phone=@phone, updated_at=@updated_at WHERE id=@id`).run(next);
   return getEvent(id);
+}
+
+// Put back a deleted event exactly as it was (same id and uid), for UNDO.
+function restoreEvent(row) {
+  db.prepare(`INSERT INTO events (id,uid,title,all_day,start_ts,end_ts,location,notes,reminder_min,reminded,source,phone,created_at,updated_at)
+    VALUES (@id,@uid,@title,@all_day,@start_ts,@end_ts,@location,@notes,@reminder_min,@reminded,@source,@phone,@created_at,@updated_at)`)
+    .run({ ...row, updated_at: Date.now() });
+  return getEvent(row.id);
 }
 
 const getEvent = id => db.prepare('SELECT * FROM events WHERE id = ?').get(id);
@@ -72,6 +80,8 @@ const eventsInRange = (from, to) =>
 const allEvents = () => db.prepare('SELECT * FROM events ORDER BY start_ts').all();
 const findUpcomingByTitle = (q, now) =>
   db.prepare(`SELECT * FROM events WHERE end_ts > ? AND title LIKE ? ORDER BY start_ts LIMIT 5`).all(now, `%${q}%`);
+const upcomingEvents = (now, limit = 1000) =>
+  db.prepare('SELECT * FROM events WHERE end_ts > ? ORDER BY start_ts LIMIT ?').all(now, limit);
 const lastCreatedBy = phone =>
   db.prepare(`SELECT * FROM events WHERE phone = ? AND source = 'sms' ORDER BY created_at DESC LIMIT 1`).get(phone);
 const dueReminders = now =>
@@ -91,6 +101,6 @@ const logSms = (direction, number, body) => {
 const recentSms = (limit = 50) => db.prepare('SELECT * FROM sms_log ORDER BY id DESC LIMIT ?').all(limit);
 
 module.exports = {
-  db, createEvent, updateEvent, getEvent, deleteEvent, eventsInRange, allEvents, findUpcomingByTitle,
+  db, createEvent, updateEvent, getEvent, deleteEvent, eventsInRange, allEvents, findUpcomingByTitle, upcomingEvents, restoreEvent,
   lastCreatedBy, dueReminders, markReminded, kvGet, kvSet, smsSeen, markSmsSeen, logSms, recentSms,
 };

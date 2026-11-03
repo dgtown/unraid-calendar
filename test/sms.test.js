@@ -52,3 +52,45 @@ test('questions look things up instead of adding events', () => {
   handleMessage('5551234567', 'Haircut Nov 20 10am', now);
   assert.match(handleMessage('5551234567', 'when is my haircut?', now), /^Haircut, Fri, Nov 20/);
 });
+
+test('smarter commands: find, cancel with choice, move, remind, undo', () => {
+  const t = b => handleMessage('5551234567', b, now);
+  const store = require('../src/db');
+  t('Vet appt Nov 10 3pm');
+  t('Soccer Sat 10am');
+  t('Soccer Nov 14 10am');
+  t('Lunch with Bob tomorrow 12pm');
+
+  // find ignores "appt" / "my"
+  assert.match(t('find my vet'), /^Vet appt, Tue, Nov 10, 3:00\sPM/);
+  assert.match(t('find soccer'), /^- Soccer, Sat, Nov 7.*\n- Soccer, Sat, Nov 14/);
+
+  // move keeps the day when only a time is given, and the time when only a day is given
+  assert.match(t('move lunch to 1pm'), /^Moved: Lunch with Bob, Wed, Nov 4, 1:00\sPM–2:00\sPM \(was Wed, Nov 4, 12:00\sPM/);
+  assert.match(t('move vet to Thursday'), /^Moved: Vet appt, Thu, Nov 5, 3:00\sPM–4:00\sPM/);
+  assert.match(t('move vet to nov 12 at 4'), /Thu, Nov 12, 4:00\sPM–5:00\sPM/);
+  assert.match(t('push lunch back an hour'), /Wed, Nov 4, 2:00\sPM–3:00\sPM/);
+  assert.match(t('undo'), /^Put back: Lunch with Bob, Wed, Nov 4, 1:00\sPM/);
+
+  // remind
+  assert.match(t('remind me 45 min before lunch'), /45 min before Lunch with Bob/);
+  assert.equal(store.findUpcomingByTitle('Lunch', now.getTime())[0].reminder_min, 45);
+  assert.match(t('no reminder for lunch'), /no reminder/);
+
+  // ambiguous cancel: numbered list, then reply with a number
+  assert.match(t('cancel soccer'), /^Which one do you want to cancel\? Reply with the number:\n1\. Soccer, Sat, Nov 7.*\n2\. Soccer, Sat, Nov 14/);
+  assert.match(t('2'), /^Cancelled: Soccer, Sat, Nov 14/);
+  assert.equal(store.findUpcomingByTitle('Soccer', now.getTime()).length, 1);
+  assert.match(t('undo'), /^Restored: Soccer, Sat, Nov 14/);
+  assert.equal(store.findUpcomingByTitle('Soccer', now.getTime()).length, 2);
+  assert.match(t('2'), /^Not sure/);
+
+  // ambiguous remind, answered by number
+  assert.match(t('remind me 1 hour before soccer'), /^Which one do you want to set a reminder for\?/);
+  assert.match(t('1'), /1 hour before Soccer, Sat, Nov 7/);
+
+  // not a known event, but it has a date: treated as a new event
+  assert.match(t('Move in day Dec 1'), /^Added: Move in day, Tue, Dec 1/);
+  assert.match(t('cancel nothing like this'), /^No upcoming event matching/);
+  assert.match(t('help'), /MOVE/);
+});

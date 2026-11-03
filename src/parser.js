@@ -19,34 +19,11 @@ function parseMessage(raw, ref = new Date(), opts = {}) {
   const lower = text.toLowerCase().replace(/[.!?\s]+$/, '');
 
   // --- Commands -----------------------------------------------------------
-  if (/^(help|\?|commands)$/.test(lower)) return { type: 'command', cmd: 'help' };
-  if (/^(undo|oops)$/.test(lower)) return { type: 'command', cmd: 'undo' };
-  // "today", "appointments", "what do I have today", "my schedule tomorrow", "this week"...
-  const ask = "(?:(?:what'?s(?: on)?|what do i have|what have i got|my|any|show(?: me)?)\\s+)?" +
-    "(?:(?:appointments?|appts?|events?|schedule|agenda|calendar|plans)\\s*)?(?:(?:for|on)\\s+)?";
-  if (/^(?:appointments?|appts?|events?|schedule|agenda|calendar|plans)$/.test(lower) ||
-      new RegExp(`^${ask}(?:today|this morning|tonight)$`).test(lower)) {
-    return { type: 'command', cmd: 'agenda', arg: 'today' };
+  if (!opts.eventOnly) {
+    const cmd = parseCommand(text, lower, ref);
+    if (cmd) return cmd;
   }
-  if (new RegExp(`^${ask}tomorrow$`).test(lower)) return { type: 'command', cmd: 'agenda', arg: 'tomorrow' };
-  if (new RegExp(`^${ask}(?:this |the )?(week|upcoming|next 7 days|next|list)$`).test(lower)) return { type: 'command', cmd: 'agenda', arg: 'week' };
   let m;
-  // Any other question about a date ("what's on friday?", "anything Saturday") is an agenda lookup, never a new event.
-  m = lower.match(/^when(?:'s| is| are| was)?\s+(?:my|the|our)?\s*(.+?)$/);
-  if (m && !chrono.parse(m[1], ref)[0]) return { type: 'command', cmd: 'find', arg: m[1].trim() };
-  const questionWord = /^(?:what|whats|when|where|do i|did i|am i|any|anything|is there|are there|show|list|check|tell me)\b/.test(lower);
-  const justARange = /^(?:the\s+)?(?:(?:this|next)\s+(?:week|weekend|month)|weekend|(?:first|1st|second|2nd|third|3rd|fourth|4th|fifth|5th|last)\s+week\s+(?:of|in)\s+[a-z]+\.?(?:\s+\d{4})?)$/.test(lower);
-  const timelessQuestion = /\?\s*$/.test(text) && !(chrono.parse(text, ref)[0]?.start.isCertain('hour'));
-  if (questionWord || justARange || timelessQuestion) {
-    const range = resolveRange(lower, text, ref);
-    if (range) return { type: 'command', cmd: 'agenda', arg: 'range', ...range };
-    if (/\bweek\b/.test(lower)) return { type: 'command', cmd: 'agenda', arg: 'week' };
-    if (!/\d/.test(lower)) return { type: 'command', cmd: 'agenda', arg: 'today' };
-  }
-  m = lower.match(/^(?:daily|morning)(?:\s+(?:text|agenda|summary))?(?:\s+(.+))?$/);
-  if (m) return { type: 'command', cmd: 'daily', arg: (m[1] || '').trim() };
-  m = lower.match(/^(?:cancel|delete|remove)\s+(.+)$/);
-  if (m) return { type: 'command', cmd: 'cancel', arg: m[1].trim() };
 
   // Leading verbs people naturally type: "add ...", "schedule ...", "new event ...".
   text = text.replace(/^(?:please\s+)?(?:add|schedule|book|create|new|put|set up|make)(?:\s+(?:an?|new))?(?:\s+(?:event|appt|appointment)(?=\s+(?:with|for|at|on)\b))?\s+/i, (m) =>
@@ -58,6 +35,7 @@ function parseMessage(raw, ref = new Date(), opts = {}) {
   if (m) {
     reminderMin = m[1] ? parseInt(m[1], 10) * UNITS[m[2].toLowerCase()] : 30;
     text = (text.slice(0, m.index) + text.slice(m.index + m[0].length)).trim();
+    if (m.index === 0) text = text.replace(/^to\s+/i, ''); // "remind me to call mom tue 3pm"
   }
 
   // --- Location: "@ Main St Clinic" (must be "@ " or " at the ") ---------
@@ -128,6 +106,100 @@ function parseMessage(raw, ref = new Date(), opts = {}) {
   }
 
   return finish(leftover, { allDay: !hasTime, start, end, location, reminderMin });
+}
+
+// ---------------------------------------------------------------------------
+// Commands. Returns { type: 'command', cmd, ... } or null (= treat as an event).
+// ---------------------------------------------------------------------------
+const DUR = "(?:(?:\\d+(?:\\.\\d+)?|an?|one|half an?)\\s*(?:m|mins?|minutes?|h|hrs?|hours?|d|days?)|half an hour|an hour and a half)";
+const durRe = s => new RegExp(s.replace(/DUR/g, DUR));
+
+// "30 min", "1h", "an hour", "half an hour", "1.5 hours" -> minutes
+function parseDuration(s) {
+  s = String(s || '').trim().toLowerCase();
+  if (/^half an? hour$/.test(s)) return 30;
+  if (s === 'an hour and a half') return 90;
+  const m = s.match(/^(\d+(?:\.\d+)?|an?|one|half an?)\s*(m|mins?|minutes?|h|hrs?|hours?|d|days?)$/);
+  if (!m) return null;
+  const n = /^(a|an|one)$/.test(m[1]) ? 1 : /^half/.test(m[1]) ? 0.5 : parseFloat(m[1]);
+  return Math.round(n * UNITS[m[2].replace(/s$/, '').replace(/^mi$/, 'min')] || 0) || null;
+}
+
+// True when the text names a day or a clock time, i.e. it's really a new event.
+function hasWhen(s, ref) {
+  const r = chrono.parse(s, ref)[0];
+  return Boolean(r && (r.start.isCertain('hour') || r.start.isCertain('day') || r.start.isCertain('weekday')));
+}
+const target = s => s.replace(/^(?:my|the|our)\s+/, '').trim();
+
+function parseCommand(text, lower, ref) {
+  if (/^(help|\?|commands|menu)$/.test(lower)) return { type: 'command', cmd: 'help' };
+  if (/^(undo|oops)$/.test(lower)) return { type: 'command', cmd: 'undo' };
+  let m;
+
+  // A reply to a numbered list: "2" or "#2"
+  m = lower.match(/^#?\s*(\d{1,2})$/);
+  if (m) return { type: 'command', cmd: 'choose', arg: +m[1] };
+
+  m = lower.match(/^(?:find|search(?:\s+for)?|look\s*up|lookup)\s+(.+)$/);
+  if (m) return { type: 'command', cmd: 'find', arg: target(m[1]) };
+
+  m = lower.match(/^(?:cancel|delete|remove)\s+(.+)$/);
+  if (m) return { type: 'command', cmd: 'cancel', arg: target(m[1]) };
+
+  // "remind me 30 min before soccer", "remind me about soccer 1 hour before", "remind me before soccer"
+  m = lower.match(durRe('^(?:set\\s+an?\\s+)?remind(?:er)?(?:\\s+me)?\\s+(?:(DUR)\\s+)?(?:before|ahead of|prior to)\\s+(.+)$'));
+  if (m && !hasWhen(m[2], ref)) return { type: 'command', cmd: 'remind', arg: target(m[2]), minutes: m[1] ? parseDuration(m[1]) : 30 };
+  m = lower.match(durRe('^(?:set\\s+an?\\s+)?remind(?:er)?(?:\\s+me)?\\s+(?:about|of|for)\\s+(.+?)(?:\\s+(DUR)(?:\\s+(?:before|ahead|early|earlier))?)?$'));
+  if (m && !hasWhen(m[1], ref)) return { type: 'command', cmd: 'remind', arg: target(m[1]), minutes: m[2] ? parseDuration(m[2]) : 30 };
+  m = lower.match(/^(?:no reminder|don'?t remind me|stop reminding me|remove (?:the )?reminder|cancel (?:the )?reminder)\s+(?:for|about|of|on)\s+(.+)$/);
+  if (m) return { type: 'command', cmd: 'remind', arg: target(m[1]), minutes: null };
+
+  // "push lunch back an hour", "move dentist 30 min later", "move lunch earlier by 15 min"
+  const verb = '(?:move|push|shift|bump|reschedule|change)';
+  m = lower.match(durRe(`^${verb}\\s+(.+?)\\s+(?:(back|later|forward|ahead|up|earlier)\\s+(?:by\\s+)?(DUR)|(?:by\\s+)?(DUR)\\s+(back|later|forward|ahead|up|earlier|sooner))$`));
+  if (m) {
+    const dir = m[2] || m[5];
+    const mins = parseDuration(m[3] || m[4]);
+    if (mins) return { type: 'command', cmd: 'move', arg: target(m[1]), shiftMin: /back|later/.test(dir) ? mins : -mins };
+  }
+  // "move lunch to 1pm", "reschedule dentist to thursday 3pm", "change soccer to 10am"
+  m = lower.match(new RegExp(`^${verb}\\s+(.+?)\\s+(?:to|till|until|for)\\s+(.+)$`));
+  if (m && (hasWhen(m[2], ref) || /^(?:at\s+)?\d{1,2}(?::\d{2})?\s*(?:am|pm|a|p)?$/.test(m[2]))) {
+    return { type: 'command', cmd: 'move', arg: target(m[1]), when: m[2] };
+  }
+  // "move dentist thursday 3pm" (no "to")
+  m = lower.match(/^(?:move|reschedule)\s+(.+)$/);
+  if (m) {
+    const r = chrono.parse(m[1], ref)[0];
+    if (r && r.index > 0) return { type: 'command', cmd: 'move', arg: target(m[1].slice(0, r.index).replace(/\s+(?:on|at)$/, '')), when: m[1].slice(r.index) };
+  }
+  if (/^(help|\?|commands)$/.test(lower)) return { type: 'command', cmd: 'help' };
+  if (/^(undo|oops)$/.test(lower)) return { type: 'command', cmd: 'undo' };
+  // "today", "appointments", "what do I have today", "my schedule tomorrow", "this week"...
+  const ask = "(?:(?:what'?s(?: on)?|what do i have|what have i got|my|any|show(?: me)?)\\s+)?" +
+    "(?:(?:appointments?|appts?|events?|schedule|agenda|calendar|plans)\\s*)?(?:(?:for|on)\\s+)?";
+  if (/^(?:appointments?|appts?|events?|schedule|agenda|calendar|plans)$/.test(lower) ||
+      new RegExp(`^${ask}(?:today|this morning|tonight)$`).test(lower)) {
+    return { type: 'command', cmd: 'agenda', arg: 'today' };
+  }
+  if (new RegExp(`^${ask}tomorrow$`).test(lower)) return { type: 'command', cmd: 'agenda', arg: 'tomorrow' };
+  if (new RegExp(`^${ask}(?:this |the )?(week|upcoming|next 7 days|next|list)$`).test(lower)) return { type: 'command', cmd: 'agenda', arg: 'week' };
+  // Any other question about a date ("what's on friday?", "anything Saturday") is an agenda lookup, never a new event.
+  m = lower.match(/^when(?:'s| is| are| was)?\s+(?:my|the|our)?\s*(.+?)$/);
+  if (m && !chrono.parse(m[1], ref)[0]) return { type: 'command', cmd: 'find', arg: m[1].trim() };
+  const questionWord = /^(?:what|whats|when|where|do i|did i|am i|any|anything|is there|are there|show|list|check|tell me)\b/.test(lower);
+  const justARange = /^(?:the\s+)?(?:(?:this|next)\s+(?:week|weekend|month)|weekend|(?:first|1st|second|2nd|third|3rd|fourth|4th|fifth|5th|last)\s+week\s+(?:of|in)\s+[a-z]+\.?(?:\s+\d{4})?)$/.test(lower);
+  const timelessQuestion = /\?\s*$/.test(text) && !(chrono.parse(text, ref)[0]?.start.isCertain('hour'));
+  if (questionWord || justARange || timelessQuestion) {
+    const range = resolveRange(lower, text, ref);
+    if (range) return { type: 'command', cmd: 'agenda', arg: 'range', ...range };
+    if (/\bweek\b/.test(lower)) return { type: 'command', cmd: 'agenda', arg: 'week' };
+    if (!/\d/.test(lower)) return { type: 'command', cmd: 'agenda', arg: 'today' };
+  }
+  m = lower.match(/^(?:daily|morning)(?:\s+(?:text|agenda|summary))?(?:\s+(.+))?$/);
+  if (m) return { type: 'command', cmd: 'daily', arg: (m[1] || '').trim() };
+  return null;
 }
 
 // Title = whatever is left once the date, location and reminder are removed.
@@ -232,4 +304,4 @@ function resolveRange(lower, text, ref) {
   return null;
 }
 
-module.exports = { parseMessage, resolveRange };
+module.exports = { parseMessage, resolveRange, parseDuration };
