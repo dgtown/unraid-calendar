@@ -8,6 +8,7 @@ const sms = require('./sms');
 const { toICS } = require('./ics');
 const { parseMessage } = require('./parser');
 const { describeEvent } = require('./format');
+const recur = require('./recur');
 const { startReminders } = require('./reminders');
 
 const app = express();
@@ -61,6 +62,8 @@ function toApi(e) {
     start: e.all_day ? d(e.start_ts) : new Date(e.start_ts).toISOString(),
     end: e.all_day ? d(e.end_ts) : new Date(e.end_ts).toISOString(),
     location: e.location, notes: e.notes, reminderMin: e.reminder_min, source: e.source,
+    repeat: recur.ruleOf(e)?.freq || null, repeatText: e.rrule ? recur.describeRule(e) : null,
+    occurrence: e.occ_ts ?? null,
   };
 }
 
@@ -80,6 +83,10 @@ function fromApi(b, partial = false) {
   if (b.end !== undefined) out.end_ts = b.end ? parseWhen(b.end) : null;
   if (b.location !== undefined) out.location = b.location ? String(b.location).slice(0, 300) : null;
   if (b.notes !== undefined) out.notes = b.notes ? String(b.notes).slice(0, 5000) : null;
+  if (b.repeat !== undefined) {
+    if (b.repeat && !['daily', 'weekly', 'monthly', 'yearly'].includes(b.repeat)) throw new Error('Invalid repeat');
+    out.rrule = b.repeat ? { freq: b.repeat, interval: 1 } : null;
+  }
   if (b.reminderMin !== undefined) out.reminder_min = b.reminderMin === null || b.reminderMin === '' ? null : parseInt(b.reminderMin, 10);
   if (!partial && !out.title) throw new Error('Title is required');
   if (out.start_ts !== undefined && Number.isNaN(out.start_ts)) throw new Error('Invalid start');
@@ -109,11 +116,31 @@ app.put('/api/events/:id', wrap((req, res) => {
   if (!cur) return res.status(404).json({ error: 'Not found' });
   const patch = fromApi(req.body, true);
   if (patch.start_ts !== undefined && patch.end_ts === undefined) patch.end_ts = patch.start_ts + (cur.end_ts - cur.start_ts);
+  const rule = recur.ruleOf(cur);
+  if (rule) {
+    // Editing one occurrence of a repeating event edits the whole series: shift it by the same amount.
+    const occ = Number(req.body.occurrence);
+    if (patch.start_ts !== undefined && Number.isFinite(occ)) {
+      const len = patch.end_ts - patch.start_ts;
+      patch.start_ts = cur.start_ts + (patch.start_ts - occ);
+      patch.end_ts = patch.start_ts + len;
+      if (patch.start_ts === cur.start_ts) delete patch.start_ts;
+    }
+    // Keep weekly days / intervals if the repeat kind didn't change.
+    if (patch.rrule && patch.rrule.freq === rule.freq) delete patch.rrule;
+    else if (patch.rrule && patch.rrule.freq !== rule.freq) patch.exdates = null;
+  }
   res.json(toApi(store.updateEvent(cur.id, patch)));
 }));
 
 app.delete('/api/events/:id', wrap((req, res) => {
-  res.status(store.deleteEvent(req.params.id) ? 204 : 404).end();
+  const cur = store.getEvent(req.params.id);
+  if (!cur) return res.status(404).end();
+  const occ = Number(req.query.occurrence);
+  if (cur.rrule && Number.isFinite(occ)) {
+    store.updateEvent(cur.id, { exdates: [...recur.exdatesOf(cur), occ] }); // skip just this one
+  } else store.deleteEvent(cur.id);
+  res.status(204).end();
 }));
 
 // "Quick add" box: same parser as text messages.
@@ -122,9 +149,9 @@ app.post('/api/quick-add', wrap((req, res) => {
   if (p.type !== 'event') return res.status(400).json({ error: p.message || 'Commands only work by text message.' });
   const ev = store.createEvent({
     title: p.title, all_day: p.allDay, start_ts: p.start.getTime(), end_ts: p.end.getTime(),
-    location: p.location, reminder_min: p.reminderMin, source: 'web',
+    location: p.location, reminder_min: p.reminderMin, source: 'web', rrule: p.rrule || null,
   });
-  res.status(201).json({ event: toApi(ev), summary: describeEvent(ev) });
+  res.status(201).json({ event: toApi(ev), summary: describeEvent(ev) + (ev.rrule ? `, repeats ${recur.describeRule(ev)}` : '') });
 }));
 
 app.get('/api/status', (req, res) => {
@@ -135,6 +162,7 @@ app.get('/api/status', (req, res) => {
     feed: Boolean(config.feedToken),
     dailyAgenda: sms.dailyTime(),
     recentSms: store.recentSms(20),
+    backups: store.listBackups(),
   });
 });
 

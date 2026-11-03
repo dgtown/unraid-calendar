@@ -18,12 +18,13 @@ A small self-hosted calendar that runs as one Docker container on Unraid.
 | `Oil change Dec 12` | All-day event |
 | `Vacation Dec 20 - Dec 27` | Multi-day event |
 | `Doctor thu 9am @ Main St Clinic` | Adds a location |
+| `Soccer every Saturday 10am`, `Gym every mon, wed and fri 6pm`, `Standup every weekday 9am` | Repeating event (also `every other week`, `daily`, `monthly on the 1st`, `every 15th`, `Mom's birthday every Mar 14`, `... until Dec 19`) |
 | `... remind 30m` / `remind me 2 hours` / `remind` | Texts you a reminder (default 30 min) |
 | `today`, `tomorrow`, `week` (also "what do I have today?", "appointments tomorrow") | Texts back your agenda |
 | `what's on Friday?`, `anything Saturday?`, `what do I have next week` | Agenda for that day or week (questions never create events) |
 | `second week of November`, `this weekend`, `in December`, `next month`, `Nov 9-15` | Agenda for that range (weeks run Sunday–Saturday) |
 | `find dentist`, `when is my haircut?` | Lists the next matching events ("dentist" also matches "Dentist appt") |
-| `cancel dentist` | Deletes the upcoming event matching "dentist" |
+| `cancel dentist` | Deletes the upcoming event matching "dentist". For a repeating event it asks: reply 1 for just the next one, 2 for all of them (same for `move`) |
 | `move lunch to 1pm`, `move dentist to Thursday 3pm`, `reschedule haircut to Nov 21` | Moves it. A time alone keeps the day, a day alone keeps the time, and the length stays the same |
 | `push lunch back an hour`, `move dentist 30 min earlier` | Shifts it by that much |
 | `remind me 30 min before soccer`, `remind me about the dentist 1 hour before`, `no reminder for soccer` | Sets or removes a reminder on an existing event |
@@ -33,6 +34,8 @@ A small self-hosted calendar that runs as one Docker container on Unraid.
 | `help` | Lists commands |
 
 Anything that isn't a command (and has a date) is added as a new event, so `Move-in day Dec 1` still works.
+
+If a new or moved event overlaps another timed event, the reply says so ("Heads up, overlaps Dentist 3:00 PM–4:00 PM").
 
 Every new event gets a confirmation text, e.g. `Added: Dentist, Tue, Nov 10, 3:00 PM–4:00 PM. Reply UNDO to remove.`
 Only numbers listed in `ALLOWED_NUMBERS` are accepted; anything else is ignored.
@@ -96,3 +99,8 @@ npm install
 npm test
 TZ=America/Toronto DATA_DIR=./data node src/server.js   # http://localhost:8080
 ```
+
+## Backups
+
+Every night (and on startup) the app copies its database to `appdata/calendar/backups/calendar-YYYY-MM-DD.db`
+and keeps the newest 7. To restore one, stop the container, copy the backup over `calendar.db`, and start it again.

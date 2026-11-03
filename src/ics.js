@@ -1,4 +1,5 @@
 'use strict';
+const { toRRule, exdatesOf } = require('./recur');
 
 const esc = s => String(s).replace(/\\/g, '\\\\').replace(/\n/g, '\\n').replace(/([,;])/g, '\\$1');
 const utc = ts => new Date(ts).toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
@@ -27,6 +28,11 @@ function toICS(events, name = 'Calendar') {
       lines.push(`DTSTART;VALUE=DATE:${localDate(e.start_ts)}`, `DTEND;VALUE=DATE:${localDate(e.end_ts)}`);
     } else {
       lines.push(`DTSTART:${utc(e.start_ts)}`, `DTEND:${utc(e.end_ts)}`);
+    }
+    const rr = toRRule(e);
+    if (rr) {
+      lines.push(`RRULE:${rr}`);
+      for (const t of exdatesOf(e)) lines.push(e.all_day ? `EXDATE;VALUE=DATE:${localDate(t)}` : `EXDATE:${utc(t)}`);
     }
     lines.push(`SUMMARY:${esc(e.title)}`);
     if (e.location) lines.push(`LOCATION:${esc(e.location)}`);

@@ -25,19 +25,29 @@ async function maybeSendDaily(now = new Date()) {
   for (const n of config.allowedNumbers) await sendSms(n, msg);
 }
 
+// Once a day (first check after midnight, and at startup), copy the database to DATA_DIR/backups.
+async function maybeBackup(now = new Date()) {
+  const { date } = localNow(now);
+  if (store.kvGet('backup_date') === date) return;
+  const file = await store.backup(date);
+  store.kvSet('backup_date', date);
+  console.log(`[backup] saved ${file}`);
+}
+
 function startReminders() {
   const tick = async () => {
     try {
       for (const ev of store.dueReminders(Date.now())) {
-        store.markReminded(ev.id);
+        store.markReminded(ev);
         const to = ev.phone || config.allowedNumbers[0];
         if (to) await sendSms(to, `Reminder: ${describeEvent(ev)}`);
       }
       await maybeSendDaily();
+      await maybeBackup();
     } catch (err) { console.error('[reminders]', err.message); }
   };
   setInterval(tick, 30000);
   tick();
 }
 
-module.exports = { startReminders, maybeSendDaily };
+module.exports = { startReminders, maybeSendDaily, maybeBackup };

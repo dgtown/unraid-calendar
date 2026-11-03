@@ -31,6 +31,13 @@
         <label>Start <input name="start" type="datetime-local" required></label>
         <label>End <input name="end" type="datetime-local"></label>
       </div>
+      <label>Repeats
+        <select name="repeat">
+          <option value="">Never</option><option value="daily">Every day</option><option value="weekly">Every week</option>
+          <option value="monthly">Every month</option><option value="yearly">Every year</option>
+        </select>
+      </label>
+      <p id="repeat-note" class="hint" hidden></p>
       <label>Location <input name="location" maxlength="300"></label>
       <label>Reminder
         <select name="reminderMin">

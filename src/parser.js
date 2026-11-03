@@ -26,7 +26,7 @@ function parseMessage(raw, ref = new Date(), opts = {}) {
   let m;
 
   // Leading verbs people naturally type: "add ...", "schedule ...", "new event ...".
-  text = text.replace(/^(?:please\s+)?(?:add|schedule|book|create|new|put|set up|make)(?:\s+(?:an?|new))?(?:\s+(?:event|appt|appointment)(?=\s+(?:with|for|at|on)\b))?\s+/i, (m) =>
+  text = text.replace(/^(?:please\s+)?(?:add|schedule|book(?!\s+club)|create|new|put|set up|make)(?:\s+(?:an?|new))?(?:\s+(?:event|appt|appointment)(?=\s+(?:with|for|at|on)\b))?\s+/i, (m) =>
     /appointment|appt/i.test(m) ? 'Appointment ' : '');
 
   // --- Reminder: "remind 30m", "remind me 1 hour", "remind" ---------------
@@ -52,6 +52,10 @@ function parseMessage(raw, ref = new Date(), opts = {}) {
     }
   }
 
+  // --- Repeats: "every Saturday", "every other week", "monthly on the 1st" ---
+  const rec = extractRepeat(text, ref);
+  if (rec) text = rec.text;
+
   // --- Length: "for 4 hours", "2h", "90 min", "for 3 days" (not "in 2 hours") ---
   let lengthMin = null;
   m = text.match(new RegExp(`(?:^|\\s)(?:for\\s+)?(${DUR})(?:\\s+long)?(?=[\\s,.]|$)`, 'i'));
@@ -61,7 +65,8 @@ function parseMessage(raw, ref = new Date(), opts = {}) {
   }
 
   // --- Date / time ---------------------------------------------------------
-  const results = chrono.parse(text, ref, { forwardDate: true });
+  let results = chrono.parse(text, ref, { forwardDate: true });
+  if (!results.length && rec) { text = `${text} today`; results = chrono.parse(text, ref, { forwardDate: true }); }
   if (!results.length) {
     return { type: 'error', message: `I couldn't find a date in "${raw}". Try something like "Dentist tue 3pm".` };
   }
@@ -97,7 +102,7 @@ function parseMessage(raw, ref = new Date(), opts = {}) {
       let e2 = new Date(day); e2.setHours(eh, +(tr[5] || 0));
       if (e2 <= s2) e2 = new Date(e2.getTime() + 24 * 3600 * 1000);
       leftover = (leftover.slice(0, tr.index) + ' ' + leftover.slice(tr.index + tr[0].length)).replace(/\s+/g, ' ').trim();
-      return finish(leftover, { allDay: false, start: s2, end: e2, location, reminderMin });
+      return finish(leftover, { allDay: false, start: s2, end: e2, location, reminderMin }, rec);
     }
   }
 
@@ -114,7 +119,7 @@ function parseMessage(raw, ref = new Date(), opts = {}) {
     if (!end) end = new Date(start.getTime() + (lengthMin || defaultDurationMin) * 60000);
   }
 
-  return finish(leftover, { allDay: !hasTime, start, end, location, reminderMin });
+  return finish(leftover, { allDay: !hasTime, start, end, location, reminderMin }, rec);
 }
 
 // ---------------------------------------------------------------------------
@@ -213,7 +218,16 @@ function parseCommand(text, lower, ref) {
 }
 
 // Title = whatever is left once the date, location and reminder are removed.
-function finish(leftover, ev) {
+function finish(leftover, ev, rec) {
+  if (rec) {
+    // Slide the first occurrence forward onto a matching day.
+    const ok = d => (rec.rule.byday ? rec.rule.byday.includes(d.getDay()) : true) && (rec.monthDay ? d.getDate() === rec.monthDay : true);
+    for (let i = 0; i < 400 && !ok(ev.start); i++) {
+      ev.start = shiftDays(ev.start, 1);
+      ev.end = shiftDays(ev.end, 1);
+    }
+    ev.rrule = rec.rule;
+  }
   let title = leftover;
   let prev;
   do { prev = title; title = title.replace(FILLER, '').replace(/^[\s,;:?!-]+|[\s,;:?!-]+$/g, '').trim(); } while (title !== prev);
@@ -221,6 +235,66 @@ function finish(leftover, ev) {
   title = title.charAt(0).toUpperCase() + title.slice(1);
 
   return { type: 'event', title, ...ev };
+}
+
+const shiftDays = (d, n) => new Date(d.getFullYear(), d.getMonth(), d.getDate() + n, d.getHours(), d.getMinutes());
+
+// ---------------------------------------------------------------------------
+// Repeating events. Returns { text (with the phrase removed), rule, monthDay } or null.
+// ---------------------------------------------------------------------------
+const DAY = '(?:sundays?|sun|mondays?|mon|tuesdays?|tues?|wednesdays?|weds?|thursdays?|thurs?|thu|fridays?|fri|saturdays?|sat)\\.?';
+const DAYLIST = `${DAY}(?:(?:\\s*(?:,|and|&|/)\\s*|\\s+)${DAY})*`;
+const PLURAL = '(?:sundays|mondays|tuesdays|wednesdays|thursdays|fridays|saturdays)';
+const MON = '(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\\.?';
+const dayIndex = w => ['su', 'mo', 'tu', 'we', 'th', 'fr', 'sa'].indexOf(w.slice(0, 2).toLowerCase());
+const daysIn = list => [...new Set((list.match(new RegExp(DAY, 'gi')) || []).map(dayIndex))].sort();
+
+function extractRepeat(text, ref) {
+  let m, rule = null, monthDay = null;
+  const cut = (mm, keep = '') => { text = (text.slice(0, mm.index) + ' ' + keep + ' ' + text.slice(mm.index + mm[0].length)).replace(/\s+/g, ' ').trim(); };
+  // Optional tail after "every month" / "weekly": "on the 15th", "on mon and wed"
+  const tail = (mm) => {
+    const rest = text.slice(mm.index + mm[0].length);
+    let t = rest.match(/^\s+on\s+(?:the\s+)?(\d{1,2})(?:st|nd|rd|th)\b/i);
+    if (t && rule.freq === 'monthly') { monthDay = +t[1]; return t[0].length; }
+    t = rest.match(new RegExp(`^\\s+on\\s+(${DAYLIST})`, 'i'));
+    if (t && rule.freq === 'weekly') { rule.byday = daysIn(t[1]); return t[0].length; }
+    return 0;
+  };
+
+  if ((m = text.match(new RegExp(`\\bevery\\s+(?=${MON}\\s+\\d{1,2}\\b|\\d{1,2}(?:st|nd|rd|th)?\\s+(?:of\\s+)?${MON})`, 'i')))) {
+    rule = { freq: 'yearly', interval: 1 }; cut(m);
+  } else if ((m = text.match(new RegExp(`\\bevery\\s+(?:the\\s+)?(\\d{1,2})(?:st|nd|rd|th)\\b(?!\\s+(?:of\\s+)?${MON})`, 'i')))) {
+    rule = { freq: 'monthly', interval: 1 }; monthDay = +m[1]; cut(m);
+  } else if ((m = text.match(/\b(?:every|each)\s+(other\s+)?(?:week\s*days?|work\s*days?)\b|\bweekdays\b/i))) {
+    rule = { freq: 'weekly', interval: m[1] ? 2 : 1, byday: [1, 2, 3, 4, 5] }; cut(m);
+  } else if ((m = text.match(new RegExp(`\\b(?:every|each)\\s+(other\\s+)?(${DAYLIST})\\b`, 'i')))) {
+    rule = { freq: 'weekly', interval: m[1] ? 2 : 1, byday: daysIn(m[2]) }; cut(m);
+  } else if ((m = text.match(/\b(?:every|each)\s+(?:(other)\s+|(\d+)\s+)?(day|week|month|year)s?\b/i))) {
+    rule = { freq: { day: 'daily', week: 'weekly', month: 'monthly', year: 'yearly' }[m[3].toLowerCase()], interval: m[1] ? 2 : +(m[2] || 1) };
+    const extra = tail(m); m[0] += text.slice(m.index + m[0].length, m.index + m[0].length + extra); cut(m);
+  } else if ((m = text.match(/(?<=\S\s+)\b(daily|weekly|bi-?weekly|fortnightly|monthly|yearly|annually)\b/i))) {
+    // Not as the first word: "Monthly review nov 20" is a title, "Rent monthly" repeats.
+    const w = m[1].toLowerCase();
+    rule = /bi|fort/.test(w) ? { freq: 'weekly', interval: 2 } : { freq: w === 'annually' ? 'yearly' : w, interval: 1 };
+    const extra = tail(m); m[0] += text.slice(m.index + m[0].length, m.index + m[0].length + extra); cut(m);
+  } else if ((m = text.match(new RegExp(`\\b(?:on\\s+)?(${PLURAL}(?:\\s*(?:,|and|&)\\s*${PLURAL})*)\\b`, 'i')))) {
+    rule = { freq: 'weekly', interval: 1, byday: daysIn(m[1]) }; cut(m);
+  }
+  if (!rule) return null;
+  if (rule.byday && !rule.byday.length) delete rule.byday;
+
+  // "until Dec 31"
+  m = text.match(/\b(?:until|till|thru|through|ending)\s+(.+)$/i);
+  if (m) {
+    const r = chrono.parse(m[1], ref, { forwardDate: true })[0];
+    if (r && r.index === 0 && (r.start.isCertain('day') || r.start.isCertain('month'))) {
+      const d = r.start.date();
+      rule.until = new Date(d.getFullYear(), d.getMonth(), d.getDate(), 23, 59, 59).getTime();
+      text = (text.slice(0, m.index) + ' ' + m[1].slice(r.text.length)).replace(/\s+/g, ' ').trim();
+    }
+  }
+  return { text, rule, monthDay };
 }
 
 // ---------------------------------------------------------------------------
