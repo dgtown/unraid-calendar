@@ -94,3 +94,23 @@ test('smarter commands: find, cancel with choice, move, remind, undo', () => {
   assert.match(t('cancel nothing like this'), /^No upcoming event matching/);
   assert.match(t('help'), /MOVE/);
 });
+
+test('long replies split at lines and words, numbered', () => {
+  const { splitSms } = require('../src/sms');
+  assert.deepEqual(splitSms('short'), ['short']);
+  const agenda = 'Next 7 days:\n' + Array.from({ length: 8 }, (_, i) => `- Tue, Nov ${i + 3} 3:00 PM Dentist appointment number ${i + 1}`).join('\n');
+  const parts = splitSms(agenda);
+  assert.ok(parts.length > 1);
+  parts.forEach((p, i) => {
+    assert.ok(p.length <= 160, p);
+    assert.ok(p.startsWith(`(${i + 1}/${parts.length}) `), p);
+  });
+  // every line arrives whole
+  const lines = parts.map(p => p.replace(/^\(\d+\/\d+\) /, '')).join('\n').split('\n');
+  assert.deepEqual(lines, agenda.split('\n'));
+  // a long single line breaks between words, never mid-word
+  const words = Array.from({ length: 60 }, (_, i) => `word${i}`);
+  const wp = splitSms(words.join(' '));
+  assert.deepEqual(wp.map(p => p.replace(/^\(\d+\/\d+\) /, '')).join(' ').split(' '), words);
+  wp.forEach(p => assert.ok(p.length <= 160));
+});
