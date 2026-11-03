@@ -4,6 +4,7 @@ const path = require('path');
 const crypto = require('crypto');
 const Database = require('better-sqlite3');
 const config = require('./config');
+const recur = require('./recur');
 
 fs.mkdirSync(config.dataDir, { recursive: true });
 const db = new Database(path.join(config.dataDir, 'calendar.db'));
@@ -35,7 +36,14 @@ CREATE TABLE IF NOT EXISTS sms_log (
 );
 `);
 
-const FIELDS = ['title', 'all_day', 'start_ts', 'end_ts', 'location', 'notes', 'reminder_min', 'source', 'phone'];
+// Columns added after v1 (repeating events).
+const cols = new Set(db.prepare('PRAGMA table_info(events)').all().map(c => c.name));
+if (!cols.has('rrule')) db.exec('ALTER TABLE events ADD COLUMN rrule TEXT');            // JSON rule, NULL = one-off
+if (!cols.has('exdates')) db.exec('ALTER TABLE events ADD COLUMN exdates TEXT');        // JSON array of skipped starts
+if (!cols.has('reminded_ts')) db.exec('ALTER TABLE events ADD COLUMN reminded_ts INTEGER'); // last occurrence reminded
+
+const FIELDS = ['title', 'all_day', 'start_ts', 'end_ts', 'location', 'notes', 'reminder_min', 'source', 'phone', 'rrule', 'exdates'];
+const json = v => (v == null ? null : typeof v === 'string' ? v : JSON.stringify(v));
 
 function createEvent(e) {
   const now = Date.now();
@@ -44,10 +52,10 @@ function createEvent(e) {
     title: e.title, all_day: e.all_day ? 1 : 0, start_ts: e.start_ts, end_ts: e.end_ts,
     location: e.location || null, notes: e.notes || null,
     reminder_min: e.reminder_min ?? null, source: e.source || 'web', phone: e.phone || null,
-    created_at: now, updated_at: now,
+    rrule: json(e.rrule), exdates: json(e.exdates), created_at: now, updated_at: now,
   };
-  const info = db.prepare(`INSERT INTO events (uid,title,all_day,start_ts,end_ts,location,notes,reminder_min,source,phone,created_at,updated_at)
-    VALUES (@uid,@title,@all_day,@start_ts,@end_ts,@location,@notes,@reminder_min,@source,@phone,@created_at,@updated_at)`).run(row);
+  const info = db.prepare(`INSERT INTO events (uid,title,all_day,start_ts,end_ts,location,notes,reminder_min,source,phone,rrule,exdates,created_at,updated_at)
+    VALUES (@uid,@title,@all_day,@start_ts,@end_ts,@location,@notes,@reminder_min,@source,@phone,@rrule,@exdates,@created_at,@updated_at)`).run(row);
   return getEvent(info.lastInsertRowid);
 }
 
@@ -57,37 +65,71 @@ function updateEvent(id, patch) {
   const next = { ...cur };
   for (const f of FIELDS) if (patch[f] !== undefined) next[f] = patch[f];
   next.all_day = next.all_day ? 1 : 0;
+  next.rrule = json(next.rrule);
+  next.exdates = json(next.exdates);
   // Re-arm the reminder if timing changed.
-  if (patch.start_ts !== undefined || patch.reminder_min !== undefined) next.reminded = 0;
+  if (patch.start_ts !== undefined || patch.reminder_min !== undefined || patch.rrule !== undefined) { next.reminded = 0; next.reminded_ts = null; }
   next.updated_at = Date.now();
   db.prepare(`UPDATE events SET title=@title, all_day=@all_day, start_ts=@start_ts, end_ts=@end_ts, location=@location,
-    notes=@notes, reminder_min=@reminder_min, reminded=@reminded, phone=@phone, updated_at=@updated_at WHERE id=@id`).run(next);
+    notes=@notes, reminder_min=@reminder_min, reminded=@reminded, reminded_ts=@reminded_ts, phone=@phone,
+    rrule=@rrule, exdates=@exdates, updated_at=@updated_at WHERE id=@id`).run(next);
   return getEvent(id);
 }
 
 // Put back a deleted event exactly as it was (same id and uid), for UNDO.
 function restoreEvent(row) {
-  db.prepare(`INSERT INTO events (id,uid,title,all_day,start_ts,end_ts,location,notes,reminder_min,reminded,source,phone,created_at,updated_at)
-    VALUES (@id,@uid,@title,@all_day,@start_ts,@end_ts,@location,@notes,@reminder_min,@reminded,@source,@phone,@created_at,@updated_at)`)
-    .run({ ...row, updated_at: Date.now() });
+  db.prepare(`INSERT INTO events (id,uid,title,all_day,start_ts,end_ts,location,notes,reminder_min,reminded,reminded_ts,source,phone,rrule,exdates,created_at,updated_at)
+    VALUES (@id,@uid,@title,@all_day,@start_ts,@end_ts,@location,@notes,@reminder_min,@reminded,@reminded_ts,@source,@phone,@rrule,@exdates,@created_at,@updated_at)`)
+    .run({ reminded_ts: null, rrule: null, exdates: null, ...row, updated_at: Date.now() });
   return getEvent(row.id);
 }
 
 const getEvent = id => db.prepare('SELECT * FROM events WHERE id = ?').get(id);
 const deleteEvent = id => db.prepare('DELETE FROM events WHERE id = ?').run(id).changes > 0;
-const eventsInRange = (from, to) =>
-  db.prepare('SELECT * FROM events WHERE start_ts < ? AND end_ts > ? ORDER BY start_ts').all(to, from);
+// One row per occurrence: repeating events are expanded into the window.
+function eventsInRange(from, to) {
+  const single = db.prepare('SELECT * FROM events WHERE rrule IS NULL AND start_ts < ? AND end_ts > ?').all(to, from);
+  const series = db.prepare('SELECT * FROM events WHERE rrule IS NOT NULL AND start_ts < ?').all(to);
+  const occ = series.flatMap(ev => recur.occurrences(ev, from, to).map(t => recur.occurrence(ev, t)));
+  return single.concat(occ).sort((a, b) => a.start_ts - b.start_ts || a.id - b.id);
+}
 const allEvents = () => db.prepare('SELECT * FROM events ORDER BY start_ts').all();
 const findUpcomingByTitle = (q, now) =>
   db.prepare(`SELECT * FROM events WHERE end_ts > ? AND title LIKE ? ORDER BY start_ts LIMIT 5`).all(now, `%${q}%`);
-const upcomingEvents = (now, limit = 1000) =>
-  db.prepare('SELECT * FROM events WHERE end_ts > ? ORDER BY start_ts LIMIT ?').all(now, limit);
+// Upcoming one-off events plus the next occurrence of each repeating event.
+function upcomingEvents(now, limit = 1000) {
+  const single = db.prepare('SELECT * FROM events WHERE rrule IS NULL AND end_ts > ? ORDER BY start_ts LIMIT ?').all(now, limit);
+  const series = db.prepare('SELECT * FROM events WHERE rrule IS NOT NULL').all()
+    .map(ev => recur.nextOccurrence(ev, now)).filter(Boolean);
+  return single.concat(series).sort((a, b) => a.start_ts - b.start_ts || a.id - b.id);
+}
 const lastCreatedBy = phone =>
   db.prepare(`SELECT * FROM events WHERE phone = ? AND source = 'sms' ORDER BY created_at DESC LIMIT 1`).get(phone);
-const dueReminders = now =>
-  db.prepare(`SELECT * FROM events WHERE reminder_min IS NOT NULL AND reminded = 0
+function dueReminders(now) {
+  const single = db.prepare(`SELECT * FROM events WHERE rrule IS NULL AND reminder_min IS NOT NULL AND reminded = 0
     AND start_ts - reminder_min * 60000 <= ? AND start_ts > ?`).all(now, now - 3600000);
-const markReminded = id => db.prepare('UPDATE events SET reminded = 1 WHERE id = ?').run(id);
+  const series = db.prepare('SELECT * FROM events WHERE rrule IS NOT NULL AND reminder_min IS NOT NULL').all()
+    .map(ev => recur.nextOccurrence(ev, now - 3600000))
+    .filter(o => o && o.start_ts > now - 3600000 && o.start_ts - o.reminder_min * 60000 <= now && (o.reminded_ts || 0) < o.start_ts);
+  return single.concat(series);
+}
+const markReminded = ev => (ev.occ_ts
+  ? db.prepare('UPDATE events SET reminded_ts = ? WHERE id = ?').run(ev.occ_ts, ev.id)
+  : db.prepare('UPDATE events SET reminded = 1 WHERE id = ?').run(ev.id ?? ev));
+
+// Nightly copy of the database into DATA_DIR/backups, keeping the newest `keep`.
+async function backup(dateStr, keep = 7) {
+  const dir = path.join(config.dataDir, 'backups');
+  fs.mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, `calendar-${dateStr}.db`);
+  if (!fs.existsSync(file)) await db.backup(file);
+  const old = fs.readdirSync(dir).filter(f => /^calendar-\d{4}-\d{2}-\d{2}\.db$/.test(f)).sort().reverse().slice(keep);
+  for (const f of old) fs.unlinkSync(path.join(dir, f));
+  return file;
+}
+const listBackups = () => {
+  try { return fs.readdirSync(path.join(config.dataDir, 'backups')).filter(f => f.endsWith('.db')).sort(); } catch { return []; }
+};
 
 const kvGet = k => db.prepare('SELECT value FROM kv WHERE key = ?').get(k)?.value;
 const kvSet = (k, v) => db.prepare('INSERT INTO kv(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(k, String(v));
@@ -102,5 +144,5 @@ const recentSms = (limit = 50) => db.prepare('SELECT * FROM sms_log ORDER BY id 
 
 module.exports = {
   db, createEvent, updateEvent, getEvent, deleteEvent, eventsInRange, allEvents, findUpcomingByTitle, upcomingEvents, restoreEvent,
-  lastCreatedBy, dueReminders, markReminded, kvGet, kvSet, smsSeen, markSmsSeen, logSms, recentSms,
+  lastCreatedBy, dueReminders, markReminded, backup, listBackups, kvGet, kvSet, smsSeen, markSmsSeen, logSms, recentSms,
 };

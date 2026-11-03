@@ -61,3 +61,4 @@ code { background: var(--panel); border: 1px solid var(--line); border-radius: 6
   .fc .fc-toolbar { flex-wrap: wrap; gap: 6px; }
   .fc .fc-toolbar-title { font-size: 1rem; }
 }
+.hint { margin: -4px 0 4px; font-size: .85em; opacity: .75; }

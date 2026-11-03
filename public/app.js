@@ -4,6 +4,7 @@
   const dlg = $('#event-dialog');
   const form = $('#event-form');
   let editingId = null;
+  let editingOcc = null; // start (ms) of the clicked occurrence of a repeating event
 
   function toast(msg, ms = 3500) {
     const t = $('#toast');
@@ -39,11 +40,12 @@
 
   function openEditor(ev) {
     editingId = ev && ev.id ? ev.id : null;
+    editingOcc = ev?.extendedProps?.repeat ? ev.extendedProps.occurrence : null;
     $('#event-dialog-title').textContent = editingId ? 'Edit event' : 'New event';
     $('#delete-btn').hidden = !editingId;
     form.reset();
     const allDay = Boolean(ev && ev.allDay);
-    form.elements.title.value = ev?.title || '';
+    form.elements.title.value = ev?.extendedProps?.plainTitle || ev?.title || '';
     form.elements.allDay.checked = allDay;
     form.elements.start.type = form.elements.end.type = allDay ? 'date' : 'datetime-local';
     const start = ev?.start || new Date(Math.ceil(Date.now() / 3600000) * 3600000);
@@ -57,6 +59,10 @@
       form.elements.start.value = localDT(start);
       form.elements.end.value = localDT(end);
     }
+    form.elements.repeat.value = ev?.extendedProps?.repeat || '';
+    const note = $('#repeat-note');
+    note.hidden = !editingOcc;
+    note.textContent = editingOcc ? `Repeats ${ev.extendedProps.repeatText}. Changes here apply to all of them.` : '';
     form.elements.location.value = ev?.extendedProps?.location || '';
     form.elements.notes.value = ev?.extendedProps?.notes || '';
     const r = ev?.extendedProps?.reminderMin;
@@ -85,6 +91,7 @@
     return {
       title: f.title.value.trim(), allDay, start, end, location: f.location.value.trim() || null,
       notes: f.notes.value.trim() || null, reminderMin: f.reminderMin.value === '' ? null : Number(f.reminderMin.value),
+      repeat: f.repeat.value || null, occurrence: editingOcc,
     };
   }
 
@@ -101,8 +108,13 @@
   });
 
   $('#delete-btn').addEventListener('click', async () => {
-    if (!editingId || !confirm('Delete this event?')) return;
-    try { await api('DELETE', `api/events/${editingId}`); dlg.close(); calendar.refetchEvents(); } catch (err) { toast(err.message); }
+    if (!editingId) return;
+    let url = `api/events/${editingId}`;
+    if (editingOcc != null) {
+      if (confirm('Delete just this one? (Cancel to choose deleting all of them)')) url += `?occurrence=${editingOcc}`;
+      else if (!confirm('Delete every one of these repeating events?')) return;
+    } else if (!confirm('Delete this event?')) return;
+    try { await api('DELETE', url); dlg.close(); calendar.refetchEvents(); } catch (err) { toast(err.message); }
   });
 
   $('#new-btn').addEventListener('click', () => openEditor(null));
@@ -139,6 +151,7 @@
         <p><b>Phone subscription feed:</b> ${s.feed
           ? `<code>${esc(location.origin)}/calendar.ics?token=YOUR_FEED_TOKEN</code>`
           : 'off (set FEED_TOKEN in the container)'}</p>
+        <p><b>Backups:</b> ${s.backups.length ? `${s.backups.length} nightly copies in appdata/backups, newest ${esc(s.backups[s.backups.length - 1])}` : 'none yet'}</p>
         <p><b>Recent texts</b></p>
         <div class="sms-log">${s.recentSms.length ? s.recentSms.map(m =>
           `<div>${m.direction === 'in' ? '⬅' : '➡'} ${esc(new Date(m.at).toLocaleString())} · ${esc(m.number)}<br>${esc(m.body)}</div>`).join('')
@@ -161,7 +174,11 @@
     selectable: true,
     dayMaxEvents: true,
     events: 'api/events',
-    eventDataTransform: e => ({ ...e, extendedProps: { location: e.location, notes: e.notes, reminderMin: e.reminderMin } }),
+    eventDataTransform: e => ({
+      ...e, title: e.repeat ? `↻ ${e.title}` : e.title, editable: !e.repeat, // drag/resize only for one-off events
+      extendedProps: { location: e.location, notes: e.notes, reminderMin: e.reminderMin, repeat: e.repeat,
+        repeatText: e.repeatText, occurrence: e.occurrence, plainTitle: e.title },
+    }),
     eventClick: info => { info.jsEvent.preventDefault(); openEditor(info.event); },
     select: info => {
       calendar.unselect();
