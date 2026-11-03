@@ -17,7 +17,7 @@ const config = {
   voipms: {
     user: process.env.VOIPMS_API_USER || '',
     password: process.env.VOIPMS_API_PASSWORD || '',
-    did: (process.env.VOIPMS_DID || '').replace(/\D/g, ''),
+    did: (process.env.VOIPMS_DID || '').replace(/\D/g, '').slice(-10), // voip.ms wants 10 digits, no leading 1
     pollSeconds: parseInt(process.env.VOIPMS_POLL_SECONDS || '30', 10),
     apiUrl: process.env.VOIPMS_API_URL || 'https://voip.ms/api/v1/rest.php',
   },
