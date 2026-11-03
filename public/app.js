@@ -135,6 +135,7 @@
         <p><b>Text messages:</b> ${s.sms.enabled
           ? `on, number ${esc(s.sms.did)}, ${s.sms.allowed} allowed sender(s). Last check: ${esc(when(s.sms.lastPoll))}${s.sms.lastError ? ` <br><b style="color:var(--danger)">Error:</b> ${esc(s.sms.lastError)}` : ''}`
           : 'off (set the VOIPMS_* settings in the container)'}</p>
+        <p><b>Morning agenda text:</b> ${s.dailyAgenda === 'off' ? 'off (text DAILY 7am to turn on)' : `every day at ${esc(s.dailyAgenda)} (text DAILY OFF to stop)`}</p>
         <p><b>Phone subscription feed:</b> ${s.feed
           ? `<code>${esc(location.origin)}/calendar.ics?token=YOUR_FEED_TOKEN</code>`
           : 'off (set FEED_TOKEN in the container)'}</p>

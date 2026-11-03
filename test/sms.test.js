@@ -24,3 +24,22 @@ test('add, list, undo, cancel', () => {
   assert.match(handleMessage('5551234567', 'week', now), /Nothing/);
   assert.match(handleMessage('5551234567', 'cancel oil', now), /^Cancelled: Oil change/);
 });
+
+test('daily agenda settings by text', () => {
+  const { dailyTime, parseClock, morningAgenda } = require('../src/sms');
+  assert.equal(dailyTime(), '07:00');
+  assert.match(handleMessage('5551234567', 'daily 6:30am', now), /6:30 AM/);
+  assert.equal(dailyTime(), '06:30');
+  assert.match(handleMessage('5551234567', 'daily off', now), /no more/);
+  assert.equal(dailyTime(), 'off');
+  assert.match(handleMessage('5551234567', 'daily on', now), /7:00 AM/);
+  assert.equal(parseClock('7pm'), '19:00');
+  assert.equal(parseClock('0730'), '07:30');
+  handleMessage('5551234567', 'Dentist today 3pm', now);
+  assert.match(morningAgenda(now), /^Good morning! Today \(Tue, Nov 3\):\n- 3:00\sPM Dentist/);
+});
+
+test('natural agenda requests', () => {
+  assert.match(handleMessage('5551234567', 'what do I have today?', now), /Dentist/);
+  assert.match(handleMessage('5551234567', 'appointments tomorrow', now), /Nothing/);
+});

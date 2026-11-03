@@ -133,6 +133,7 @@ app.get('/api/status', (req, res) => {
     sms: { enabled: config.smsEnabled, did: config.voipms.did || null, allowed: config.allowedNumbers.length,
       lastPoll: sms.status.lastPoll, lastError: sms.status.lastError },
     feed: Boolean(config.feedToken),
+    dailyAgenda: sms.dailyTime(),
     recentSms: store.recentSms(20),
   });
 });

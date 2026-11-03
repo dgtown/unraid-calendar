@@ -20,10 +20,18 @@ function parseMessage(raw, ref = new Date(), opts = {}) {
   // --- Commands -----------------------------------------------------------
   if (/^(help|\?|commands)$/.test(lower)) return { type: 'command', cmd: 'help' };
   if (/^(undo|oops)$/.test(lower)) return { type: 'command', cmd: 'undo' };
-  if (/^(today|what'?s today|agenda)$/.test(lower)) return { type: 'command', cmd: 'agenda', arg: 'today' };
-  if (/^tomorrow$/.test(lower)) return { type: 'command', cmd: 'agenda', arg: 'tomorrow' };
-  if (/^(list|week|upcoming|this week|next)$/.test(lower)) return { type: 'command', cmd: 'agenda', arg: 'week' };
-  let m = lower.match(/^(?:cancel|delete|remove)\s+(.+)$/);
+  // "today", "appointments", "what do I have today", "my schedule tomorrow", "this week"...
+  const ask = "(?:(?:what'?s(?: on)?|what do i have|what have i got|my|any|show(?: me)?)\\s+)?" +
+    "(?:(?:appointments?|appts?|events?|schedule|agenda|calendar|plans)\\s*)?(?:(?:for|on)\\s+)?";
+  if (/^(?:appointments?|appts?|events?|schedule|agenda|calendar|plans)$/.test(lower) ||
+      new RegExp(`^${ask}(?:today|this morning|tonight)$`).test(lower)) {
+    return { type: 'command', cmd: 'agenda', arg: 'today' };
+  }
+  if (new RegExp(`^${ask}tomorrow$`).test(lower)) return { type: 'command', cmd: 'agenda', arg: 'tomorrow' };
+  if (new RegExp(`^${ask}(?:this |the )?(week|upcoming|next 7 days|next|list)$`).test(lower)) return { type: 'command', cmd: 'agenda', arg: 'week' };
+  let m = lower.match(/^(?:daily|morning)(?:\s+(?:text|agenda|summary))?(?:\s+(.+))?$/);
+  if (m) return { type: 'command', cmd: 'daily', arg: (m[1] || '').trim() };
+  m = lower.match(/^(?:cancel|delete|remove)\s+(.+)$/);
   if (m) return { type: 'command', cmd: 'cancel', arg: m[1].trim() };
 
   // Leading verbs people naturally type: "add ...", "schedule ...", "new event ...".

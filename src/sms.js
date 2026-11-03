@@ -5,7 +5,28 @@ const { parseMessage } = require('./parser');
 const { describeEvent, timeFmt, dayFmt } = require('./format');
 
 const HELP = 'Text an event like "Dentist tue 3pm" or "Party Sat 2-5 @ Sam\'s remind 1h". ' +
-  'Other commands: TODAY, TOMORROW, WEEK, UNDO, CANCEL <name>.';
+  'Other commands: TODAY, TOMORROW, WEEK, UNDO, CANCEL <name>, DAILY 7am / DAILY OFF.';
+
+// ---------------------------------------------------------------------------
+// Daily agenda time: set by text ("daily 6:30am"), else DAILY_AGENDA_TIME.
+// Stored as "HH:MM" (24h) or "off".
+// ---------------------------------------------------------------------------
+function parseClock(s) {
+  const m = String(s || '').trim().toLowerCase().match(/^(?:at\s+)?(\d{1,2})(?::?(\d{2}))?\s*(am|pm|a|p)?$/);
+  if (!m) return null;
+  let h = +m[1]; const min = +(m[2] || 0);
+  if (m[3]) { h %= 12; if (m[3][0] === 'p') h += 12; }
+  if (h > 23 || min > 59) return null;
+  return `${String(h).padStart(2, '0')}:${String(min).padStart(2, '0')}`;
+}
+function dailyTime() {
+  const v = store.kvGet('daily_time') ?? config.dailyAgendaTime;
+  return /^(off|no|false|disabled?)$/i.test(v) ? 'off' : (parseClock(v) || 'off');
+}
+const prettyClock = hhmm => {
+  const [h, m] = hhmm.split(':').map(Number);
+  return `${h % 12 || 12}:${String(m).padStart(2, '0')} ${h < 12 ? 'AM' : 'PM'}`;
+};
 
 const normalize = n => String(n || '').replace(/\D/g, '').slice(-10);
 
@@ -87,6 +108,19 @@ function handleMessage(from, body, now = new Date()) {
       }
       const [s, e] = dayBounds(p.arg === 'tomorrow' ? 1 : 0, now);
       return agendaText(p.arg, store.eventsInRange(s, e));
+    }
+    case 'daily': {
+      const a = p.arg;
+      if (!a) {
+        const t = dailyTime();
+        return t === 'off' ? 'Morning agenda texts are off. Text "DAILY 7am" to turn them on.'
+          : `You get your agenda every day at ${prettyClock(t)}. Text "DAILY OFF" to stop or "DAILY 6:30am" to change the time.`;
+      }
+      if (/^(off|stop|no)$/.test(a)) { store.kvSet('daily_time', 'off'); return 'OK, no more morning agenda texts. Text "DAILY 7am" to turn them back on.'; }
+      const t = /^(on|yes|start)$/.test(a) ? (parseClock(config.dailyAgendaTime) || '07:00') : parseClock(a);
+      if (!t) return 'Try "DAILY 7am", "DAILY 6:30am" or "DAILY OFF".';
+      store.kvSet('daily_time', t);
+      return `OK, I'll text your agenda every day at ${prettyClock(t)}.`;
     }
     case 'cancel': {
       const matches = store.findUpcomingByTitle(p.arg, now.getTime());
@@ -171,4 +205,11 @@ function startPolling() {
   tick();
 }
 
-module.exports = { handleMessage, receive, sendSms, startPolling, status, isAllowed, normalize };
+function morningAgenda(now = new Date()) {
+  const [s, e] = dayBounds(0, now);
+  const events = store.eventsInRange(s, e);
+  const label = `today (${dayFmt.format(now)})`;
+  return events.length ? `Good morning! ${agendaText(label, events)}` : `Good morning! Nothing on the calendar ${label}.`;
+}
+
+module.exports = { dailyTime, morningAgenda, parseClock, handleMessage, receive, sendSms, startPolling, status, isAllowed, normalize };

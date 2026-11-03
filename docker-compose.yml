@@ -18,3 +18,4 @@ services:
       VOIPMS_DID: ""                  # the voip.ms number that receives texts, e.g. 5551234567
       ALLOWED_NUMBERS: ""             # who may text it, comma separated, e.g. 5559876543
       VOIPMS_POLL_SECONDS: "30"
+      DAILY_AGENDA_TIME: "07:00"      # morning agenda text, or "off"

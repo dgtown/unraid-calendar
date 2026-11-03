@@ -5,7 +5,7 @@ A small self-hosted calendar that runs as one Docker container on Unraid.
 - **Add events by text message** through your voip.ms number: `Dentist tue 3pm`, `Sam's party Sat 2-5 @ 12 Oak St remind 1h`.
 - **Web page** that works on desktop and phone (Android: Chrome → "Add to Home screen").
 - **Phone calendar subscription** (`.ics` feed) for Google Calendar, Samsung Calendar (via ICSx⁵) or iPhone.
-- **Text reminders** before events.
+- **Text reminders** before events, plus a **morning agenda text** every day at 7:00 AM.
 - Everything is stored in one SQLite file in `/mnt/user/appdata/calendar`.
 
 ## Texting it
@@ -18,7 +18,8 @@ A small self-hosted calendar that runs as one Docker container on Unraid.
 | `Vacation Dec 20 - Dec 27` | Multi-day event |
 | `Doctor thu 9am @ Main St Clinic` | Adds a location |
 | `... remind 30m` / `remind me 2 hours` / `remind` | Texts you a reminder (default 30 min) |
-| `today`, `tomorrow`, `week` | Texts back your agenda |
+| `today`, `tomorrow`, `week` (also "what do I have today?", "appointments tomorrow") | Texts back your agenda |
+| `daily 6:30am` / `daily off` / `daily` | Change, stop, or check the morning agenda text (default 7:00 AM) |
 | `undo` | Removes the last event you texted |
 | `cancel dentist` | Deletes the upcoming event matching "dentist" |
 | `help` | Lists commands |
@@ -65,6 +66,7 @@ Prefer compose? Use `docker-compose.yml` with the Compose Manager plugin.
 | `VOIPMS_API_PASSWORD` | voip.ms API password. |
 | `VOIPMS_DID` | Your voip.ms number (digits). |
 | `ALLOWED_NUMBERS` | Comma-separated numbers allowed to text it. |
+| `DAILY_AGENDA_TIME` | When to text the day's agenda (default `07:00`; `off` to disable). Texting `DAILY ...` overrides it. |
 | `VOIPMS_POLL_SECONDS` | How often to check for texts (default 30). |
 | `DEFAULT_DURATION_MIN` | Length of events with no end time (default 60). |
 

@@ -13,6 +13,8 @@ const config = {
   appPassword: process.env.APP_PASSWORD || '',
   // Secret token for the read-only .ics feed and the optional SMS webhook.
   feedToken: process.env.FEED_TOKEN || '',
+  // Time to text today's agenda each morning ("07:00"), or "off".
+  dailyAgendaTime: process.env.DAILY_AGENDA_TIME || '07:00',
   defaultDurationMin: parseInt(process.env.DEFAULT_DURATION_MIN || '60', 10),
   voipms: {
     user: process.env.VOIPMS_API_USER || '',

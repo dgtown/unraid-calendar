@@ -19,5 +19,6 @@
   <Config Name="voip.ms API password" Target="VOIPMS_API_PASSWORD" Default="" Description="The API password set under Main Menu, SOAP and REST/JSON API (not your login password)" Type="Variable" Display="always" Required="false" Mask="true"></Config>
   <Config Name="voip.ms number (DID)" Target="VOIPMS_DID" Default="" Description="The voip.ms number that receives your texts, digits only" Type="Variable" Display="always" Required="false" Mask="false"></Config>
   <Config Name="Allowed numbers" Target="ALLOWED_NUMBERS" Default="" Description="Phone numbers allowed to add events, comma separated" Type="Variable" Display="always" Required="false" Mask="false"></Config>
+  <Config Name="Morning agenda time" Target="DAILY_AGENDA_TIME" Default="07:00" Description="Time to text you the day's appointments, e.g. 07:00 or 6:30am, or off. You can also change it by texting DAILY 6:30am / DAILY OFF." Type="Variable" Display="always" Required="false" Mask="false">07:00</Config>
   <Config Name="Poll interval (seconds)" Target="VOIPMS_POLL_SECONDS" Default="30" Description="How often to check voip.ms for new texts" Type="Variable" Display="advanced" Required="false" Mask="false">30</Config>
 </Container>
