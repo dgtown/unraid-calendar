@@ -26,6 +26,10 @@ function parseMessage(raw, ref = new Date(), opts = {}) {
   let m = lower.match(/^(?:cancel|delete|remove)\s+(.+)$/);
   if (m) return { type: 'command', cmd: 'cancel', arg: m[1].trim() };
 
+  // Leading verbs people naturally type: "add ...", "schedule ...", "new event ...".
+  text = text.replace(/^(?:please\s+)?(?:add|schedule|book|create|new|put|set up|make)(?:\s+(?:an?|new))?(?:\s+(?:event|appt|appointment)(?=\s+(?:with|for|at|on)\b))?\s+/i, (m) =>
+    /appointment|appt/i.test(m) ? 'Appointment ' : '');
+
   // --- Reminder: "remind 30m", "remind me 1 hour", "remind" ---------------
   let reminderMin = null;
   m = text.match(/\bremind(?:er)?(?:\s+me)?(?:\s+(\d+)\s*(m|mins?|minutes?|h|hrs?|hours?|d|days?)\b(?:\s+before)?)?/i);

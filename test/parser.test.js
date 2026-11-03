@@ -46,3 +46,12 @@ test('commands', () => {
 test('no date gives an error', () => {
   assert.equal(parseMessage('lunch with bob', ref).type, 'error');
 });
+
+test('leading "add" is dropped', () => {
+  const r = parseMessage('add appointment with Dr Chen at 1pm on Nov. 19', ref);
+  assert.equal(r.title, 'Appointment with Dr Chen');
+  assert.equal(local(r.start), '2026-11-19 13:00');
+  assert.equal(parseMessage('Add dentist tue 3pm', ref).title, 'Dentist');
+  assert.equal(parseMessage('schedule an oil change Dec 12', ref).title, 'Oil change');
+  assert.equal(parseMessage('Address change tue', ref).title, 'Address change');
+});

@@ -107,8 +107,9 @@ async function receive(id, from, body) {
     store.markSmsSeen(id);
   }
   store.logSms('in', normalize(from), body);
+  console.log(`[sms] received from ${normalize(from)}: ${body}`);
   if (!isAllowed(from)) {
-    console.log(`[sms] ignoring text from unlisted number ${from}`);
+    console.log(`[sms] ignoring text from ${from}: not in ALLOWED_NUMBERS`);
     return;
   }
   let reply;
@@ -142,7 +143,11 @@ async function pollOnce() {
 
   // First run: don't replay texts that arrived before the app existed.
   if (!store.kvGet('sms_primed')) {
-    msgs.forEach(m => store.markSmsSeen(m.id));
+    msgs.forEach(m => {
+      store.markSmsSeen(m.id);
+      store.logSms('in', normalize(m.contact), `[skipped: arrived before the app was set up] ${m.message}`);
+    });
+    console.log(`[sms] connected to voip.ms; skipped ${msgs.length} older text(s)`);
     store.kvSet('sms_primed', '1');
     return;
   }
@@ -154,6 +159,7 @@ function startPolling() {
     console.log('[sms] voip.ms not configured; text messaging disabled');
     return;
   }
+  console.log(`[sms] checking voip.ms number ${config.voipms.did} every ${config.voipms.pollSeconds}s; allowed senders: ${config.allowedNumbers.join(', ') || 'NONE'}`);
   if (!config.allowedNumbers.length) console.warn('[sms] ALLOWED_NUMBERS is empty; all incoming texts will be ignored');
   const tick = async () => {
     try { await pollOnce(); status.lastError = null; } catch (err) {
