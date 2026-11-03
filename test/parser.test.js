@@ -86,3 +86,17 @@ test('smarter commands vs new events', () => {
   assert.equal(c('Soccer sat 10am remind me 1 hour before').reminderMin, 60);
   assert.equal(c('remind me to call mom tue 3pm').title, 'Call mom');
 });
+
+test('event length: "for 4 hours"', () => {
+  const ev = t => { const r = parseMessage(t, ref); return `${r.title} ${local(r.start)} ${local(r.end)}`; };
+  assert.equal(ev('Golf sat 10am for 4 hours'), 'Golf 2026-11-7 10:00 2026-11-7 14:00');
+  assert.equal(ev('Meeting tue 2pm 90 min'), 'Meeting 2026-11-3 14:00 2026-11-3 15:30');
+  assert.equal(ev('Workshop thu 9am for two hours'), 'Workshop 2026-11-5 9:00 2026-11-5 11:00');
+  assert.equal(ev('Movie fri 7pm for an hour and a half'), 'Movie 2026-11-6 19:00 2026-11-6 20:30');
+  assert.equal(ev('Golf for 2.5 hrs sat 10am'), 'Golf 2026-11-7 10:00 2026-11-7 12:30');
+  assert.equal(ev('Cottage Dec 4 for 3 days'), 'Cottage 2026-12-4 0:00 2026-12-7 0:00');
+  assert.equal(ev('Call mom in 2 hours'), 'Call mom 2026-11-3 11:00 2026-11-3 12:00');
+  const r = parseMessage('Dentist tue 3pm remind 1 hour', ref);
+  assert.equal(r.reminderMin, 60);
+  assert.equal(local(r.end), '2026-11-3 16:00');
+});

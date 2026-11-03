@@ -52,6 +52,14 @@ function parseMessage(raw, ref = new Date(), opts = {}) {
     }
   }
 
+  // --- Length: "for 4 hours", "2h", "90 min", "for 3 days" (not "in 2 hours") ---
+  let lengthMin = null;
+  m = text.match(new RegExp(`(?:^|\\s)(?:for\\s+)?(${DUR})(?:\\s+long)?(?=[\\s,.]|$)`, 'i'));
+  if (m && !/\bin$/i.test(text.slice(0, m.index).trim())) {
+    lengthMin = parseDuration(m[1]);
+    if (lengthMin) text = (text.slice(0, m.index) + ' ' + text.slice(m.index + m[0].length)).replace(/\s+/g, ' ').trim();
+  }
+
   // --- Date / time ---------------------------------------------------------
   const results = chrono.parse(text, ref, { forwardDate: true });
   if (!results.length) {
@@ -95,14 +103,15 @@ function parseMessage(raw, ref = new Date(), opts = {}) {
 
   if (!hasTime) {
     start = new Date(start.getFullYear(), start.getMonth(), start.getDate());
+    const days = !end && lengthMin && lengthMin % 1440 === 0 ? lengthMin / 1440 : 1;
     end = end ? new Date(end.getFullYear(), end.getMonth(), end.getDate() + 1)
-              : new Date(start.getFullYear(), start.getMonth(), start.getDate() + 1);
+              : new Date(start.getFullYear(), start.getMonth(), start.getDate() + days);
   } else {
     if (end && end <= start) {
       // "9pm-1am" style: end rolls into the next day.
       end = new Date(end.getTime() + 24 * 3600 * 1000);
     }
-    if (!end) end = new Date(start.getTime() + defaultDurationMin * 60000);
+    if (!end) end = new Date(start.getTime() + (lengthMin || defaultDurationMin) * 60000);
   }
 
   return finish(leftover, { allDay: !hasTime, start, end, location, reminderMin });
@@ -111,17 +120,18 @@ function parseMessage(raw, ref = new Date(), opts = {}) {
 // ---------------------------------------------------------------------------
 // Commands. Returns { type: 'command', cmd, ... } or null (= treat as an event).
 // ---------------------------------------------------------------------------
-const DUR = "(?:(?:\\d+(?:\\.\\d+)?|an?|one|half an?)\\s*(?:m|mins?|minutes?|h|hrs?|hours?|d|days?)|half an hour|an hour and a half)";
+const DUR = "(?:half an hour|an? hour and a half|(?:\\d+(?:\\.\\d+)?|an?|one|two|three|four|five|six|half an?)\\s*(?:m|mins?|minutes?|h|hrs?|hours?|d|days?))";
 const durRe = s => new RegExp(s.replace(/DUR/g, DUR));
 
 // "30 min", "1h", "an hour", "half an hour", "1.5 hours" -> minutes
 function parseDuration(s) {
   s = String(s || '').trim().toLowerCase();
   if (/^half an? hour$/.test(s)) return 30;
-  if (s === 'an hour and a half') return 90;
-  const m = s.match(/^(\d+(?:\.\d+)?|an?|one|half an?)\s*(m|mins?|minutes?|h|hrs?|hours?|d|days?)$/);
+  if (/^an? hour and a half$/.test(s)) return 90;
+  const m = s.match(/^(\d+(?:\.\d+)?|an?|one|two|three|four|five|six|half an?)\s*(m|mins?|minutes?|h|hrs?|hours?|d|days?)$/);
   if (!m) return null;
-  const n = /^(a|an|one)$/.test(m[1]) ? 1 : /^half/.test(m[1]) ? 0.5 : parseFloat(m[1]);
+  const WORDN = { a: 1, an: 1, one: 1, two: 2, three: 3, four: 4, five: 5, six: 6 };
+  const n = WORDN[m[1]] || (/^half/.test(m[1]) ? 0.5 : parseFloat(m[1]));
   return Math.round(n * UNITS[m[2].replace(/s$/, '').replace(/^mi$/, 'min')] || 0) || null;
 }
 
