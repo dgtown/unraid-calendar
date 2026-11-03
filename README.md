@@ -14,6 +14,7 @@ A small self-hosted calendar that runs as one Docker container on Unraid.
 |---|---|
 | `Dentist tue 3pm` | 1-hour event Tuesday at 3pm |
 | `Party Saturday 2-5` | Saturday 2–5pm (bare 1–7 o'clock times are assumed PM) |
+| `Golf Sat 10am for 4 hours`, `Meeting tue 2pm 90 min`, `Cottage Dec 4 for 3 days` | Sets how long it lasts (otherwise 1 hour) |
 | `Oil change Dec 12` | All-day event |
 | `Vacation Dec 20 - Dec 27` | Multi-day event |
 | `Doctor thu 9am @ Main St Clinic` | Adds a location |
