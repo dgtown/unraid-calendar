@@ -1,0 +1,23 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>calendar</Name>
+  <Repository>ghcr.io/dgtown/unraid-calendar:latest</Repository>
+  <Registry>https://github.com/dgtown/unraid-calendar/pkgs/container/unraid-calendar</Registry>
+  <Network>bridge</Network>
+  <Shell>sh</Shell>
+  <Privileged>false</Privileged>
+  <Overview>Self-hosted calendar. Add events by text message through voip.ms ("Dentist tue 3pm"), view them in a phone-friendly web page, and subscribe from your phone's calendar app.</Overview>
+  <Category>Productivity: Tools:</Category>
+  <WebUI>http://[IP]:[PORT:8080]/</WebUI>
+  <Icon>https://raw.githubusercontent.com/dgtown/unraid-calendar/main/public/icon.svg</Icon>
+  <Config Name="Web UI port" Target="8080" Default="8080" Mode="tcp" Description="Port for the web page" Type="Port" Display="always" Required="true" Mask="false">8080</Config>
+  <Config Name="Data" Target="/data" Default="/mnt/user/appdata/calendar" Mode="rw" Description="Where the calendar database is stored" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/calendar</Config>
+  <Config Name="Time zone" Target="TZ" Default="America/New_York" Description="Your time zone, e.g. America/Chicago" Type="Variable" Display="always" Required="true" Mask="false">America/New_York</Config>
+  <Config Name="Web password" Target="APP_PASSWORD" Default="" Description="Optional. If set, the web page asks for this password (any username)." Type="Variable" Display="always" Required="false" Mask="true"></Config>
+  <Config Name="Feed token" Target="FEED_TOKEN" Default="" Description="Long random string. Enables the phone subscription feed at /calendar.ics?token=..." Type="Variable" Display="always" Required="false" Mask="true"></Config>
+  <Config Name="voip.ms API user" Target="VOIPMS_API_USER" Default="" Description="Your voip.ms login email" Type="Variable" Display="always" Required="false" Mask="false"></Config>
+  <Config Name="voip.ms API password" Target="VOIPMS_API_PASSWORD" Default="" Description="The API password set under Main Menu, SOAP and REST/JSON API (not your login password)" Type="Variable" Display="always" Required="false" Mask="true"></Config>
+  <Config Name="voip.ms number (DID)" Target="VOIPMS_DID" Default="" Description="The voip.ms number that receives your texts, digits only" Type="Variable" Display="always" Required="false" Mask="false"></Config>
+  <Config Name="Allowed numbers" Target="ALLOWED_NUMBERS" Default="" Description="Phone numbers allowed to add events, comma separated" Type="Variable" Display="always" Required="false" Mask="false"></Config>
+  <Config Name="Poll interval (seconds)" Target="VOIPMS_POLL_SECONDS" Default="30" Description="How often to check voip.ms for new texts" Type="Variable" Display="advanced" Required="false" Mask="false">30</Config>
+</Container>

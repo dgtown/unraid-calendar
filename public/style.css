@@ -1,0 +1,63 @@
+:root {
+  --bg: #ffffff; --fg: #111827; --muted: #6b7280; --line: #e5e7eb; --panel: #f9fafb;
+  --accent: #2563eb; --accent-fg: #ffffff; --danger: #dc2626; --today: #eff6ff;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0f1115; --fg: #e5e7eb; --muted: #9ca3af; --line: #2a2f3a; --panel: #171a21;
+    --accent: #3b82f6; --accent-fg: #ffffff; --danger: #ef4444; --today: #172033;
+    color-scheme: dark;
+  }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body { background: var(--bg); color: var(--fg); font: 15px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  display: flex; flex-direction: column; }
+header { display: flex; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--line); background: var(--panel);
+  padding-top: max(10px, env(safe-area-inset-top)); }
+#quick { flex: 1; display: flex; gap: 8px; min-width: 0; }
+#quick input { flex: 1; min-width: 0; }
+input, select, textarea { font: inherit; color: var(--fg); background: var(--bg); border: 1px solid var(--line);
+  border-radius: 8px; padding: 8px 10px; width: 100%; }
+input[type=checkbox] { width: auto; }
+button { font: inherit; border: 0; border-radius: 8px; padding: 8px 14px; background: var(--accent); color: var(--accent-fg);
+  cursor: pointer; white-space: nowrap; }
+button.secondary { background: transparent; color: var(--fg); border: 1px solid var(--line); }
+button.danger { background: transparent; color: var(--danger); border: 1px solid var(--danger); }
+main { flex: 1; padding: 8px 12px 12px; min-height: 0; }
+#toast { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); background: var(--fg); color: var(--bg);
+  padding: 10px 16px; border-radius: 10px; max-width: calc(100% - 32px); z-index: 10; }
+dialog { border: 1px solid var(--line); border-radius: 14px; background: var(--bg); color: var(--fg); padding: 0;
+  width: min(480px, calc(100% - 24px)); }
+dialog::backdrop { background: rgb(0 0 0 / .45); }
+dialog form { padding: 18px; display: flex; flex-direction: column; gap: 12px; }
+dialog h2 { margin: 0; font-size: 18px; }
+label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--muted); }
+label.row { flex-direction: row; align-items: center; gap: 8px; color: var(--fg); font-size: 15px; }
+.two { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.actions { display: flex; gap: 8px; align-items: center; }
+.spacer { flex: 1; }
+code { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 1px 5px; word-break: break-all; }
+.sms-log { max-height: 220px; overflow: auto; font-size: 13px; border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; }
+.sms-log div { padding: 3px 0; border-bottom: 1px solid var(--line); }
+.sms-log div:last-child { border: 0; }
+
+/* FullCalendar theming */
+.fc { --fc-border-color: var(--line); --fc-page-bg-color: var(--bg); --fc-neutral-bg-color: var(--panel);
+  --fc-today-bg-color: var(--today); --fc-event-bg-color: var(--accent); --fc-event-border-color: var(--accent);
+  --fc-button-bg-color: var(--panel); --fc-button-border-color: var(--line); --fc-button-text-color: var(--fg);
+  --fc-button-hover-bg-color: var(--line); --fc-button-hover-border-color: var(--line);
+  --fc-button-active-bg-color: var(--accent); --fc-button-active-border-color: var(--accent);
+  --fc-list-event-hover-bg-color: var(--panel); height: 100%; }
+.fc .fc-toolbar-title { font-size: 1.2rem; }
+.fc .fc-button { padding: .3em .6em; }
+.fc a { color: inherit; }
+
+@media (max-width: 640px) {
+  header { flex-wrap: wrap; }
+  #quick { flex-basis: 100%; }
+  .two { grid-template-columns: 1fr; }
+  .fc .fc-toolbar { flex-wrap: wrap; gap: 6px; }
+  .fc .fc-toolbar-title { font-size: 1rem; }
+}

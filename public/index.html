@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Calendar</title>
+  <meta name="theme-color" content="#2563eb">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icon.svg">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <form id="quick" autocomplete="off">
+      <input id="quick-text" type="text" placeholder="Add like a text: Dentist tue 3pm @ Main St remind 30m" aria-label="Quick add">
+      <button type="submit">Add</button>
+    </form>
+    <button id="new-btn" class="secondary" title="New event">+ Event</button>
+    <button id="settings-btn" class="secondary" title="Status &amp; setup" aria-label="Status">⚙</button>
+  </header>
+  <div id="toast" role="status" hidden></div>
+  <main id="calendar"></main>
+
+  <dialog id="event-dialog">
+    <form method="dialog" id="event-form">
+      <h2 id="event-dialog-title">Event</h2>
+      <label>Title <input name="title" required maxlength="300"></label>
+      <label class="row"><input type="checkbox" name="allDay"> All day</label>
+      <div class="two">
+        <label>Start <input name="start" type="datetime-local" required></label>
+        <label>End <input name="end" type="datetime-local"></label>
+      </div>
+      <label>Location <input name="location" maxlength="300"></label>
+      <label>Reminder
+        <select name="reminderMin">
+          <option value="">None</option><option value="0">At start</option><option value="10">10 min before</option>
+          <option value="30">30 min before</option><option value="60">1 hour before</option>
+          <option value="120">2 hours before</option><option value="1440">1 day before</option>
+        </select>
+      </label>
+      <label>Notes <textarea name="notes" rows="3" maxlength="5000"></textarea></label>
+      <div class="actions">
+        <button type="button" id="delete-btn" class="danger">Delete</button>
+        <span class="spacer"></span>
+        <button value="cancel" formnovalidate class="secondary">Cancel</button>
+        <button id="save-btn" value="save">Save</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="status-dialog">
+    <form method="dialog">
+      <h2>Status</h2>
+      <div id="status-body">Loading…</div>
+      <div class="actions"><span class="spacer"></span><button>Close</button></div>
+    </form>
+  </dialog>
+
+  <script src="vendor/fullcalendar.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
