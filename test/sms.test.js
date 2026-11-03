@@ -48,7 +48,7 @@ test('questions look things up instead of adding events', () => {
   for (const q of ['what do i have tomorrow', 'whats happening tomorrow', 'do I have anything Friday', 'what’s on tomorrow', 'anything on Saturday?']) {
     assert.doesNotMatch(handleMessage('5551234567', q, now), /^Added/, q);
   }
-  assert.match(handleMessage('5551234567', 'what do i have next week', now), /week of/);
+  assert.match(handleMessage('5551234567', 'what do i have next week', now), /Nov 8 – Sat, Nov 14/);
   handleMessage('5551234567', 'Haircut Nov 20 10am', now);
   assert.match(handleMessage('5551234567', 'when is my haircut?', now), /^Haircut, Fri, Nov 20/);
 });

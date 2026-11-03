@@ -20,6 +20,7 @@ A small self-hosted calendar that runs as one Docker container on Unraid.
 | `... remind 30m` / `remind me 2 hours` / `remind` | Texts you a reminder (default 30 min) |
 | `today`, `tomorrow`, `week` (also "what do I have today?", "appointments tomorrow") | Texts back your agenda |
 | `what's on Friday?`, `anything Saturday?`, `what do I have next week` | Agenda for that day or week (questions never create events) |
+| `second week of November`, `this weekend`, `in December`, `next month`, `Nov 9-15` | Agenda for that range (weeks run Sunday–Saturday) |
 | `when is my haircut?` | Finds the next matching event |
 | `daily 6:30am` / `daily off` / `daily` | Change, stop, or check the morning agenda text (default 7:00 AM) |
 | `undo` | Removes the last event you texted |

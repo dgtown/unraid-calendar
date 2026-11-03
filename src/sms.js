@@ -106,15 +106,13 @@ function handleMessage(from, body, now = new Date()) {
         const [s] = dayBounds(0, now);
         return agendaText('the next 7 days', store.eventsInRange(s, s + 7 * 86400000), true);
       }
-      if (p.arg === 'weekof') {
-        const s = p.date.getTime();
-        return agendaText(`the week of ${dayFmt.format(p.date)}`, store.eventsInRange(s, s + 7 * 86400000), true);
-      }
-      if (p.arg === 'day') {
-        const [s, e] = dayBounds(0, p.date);
+      if (p.arg === 'range') {
+        const s = p.start.getTime(), e = p.end.getTime();
         const [t0] = dayBounds(0, now);
-        const label = s === t0 ? 'today' : s === t0 + 86400000 ? 'tomorrow' : `on ${dayFmt.format(p.date)}`;
-        return agendaText(label, store.eventsInRange(s, e));
+        let label;
+        if (!p.multiDay) label = s === t0 ? 'today' : s === t0 + 86400000 ? 'tomorrow' : `on ${dayFmt.format(p.start)}`;
+        else label = `${dayFmt.format(p.start)} – ${dayFmt.format(new Date(e - 1))}`;
+        return agendaText(label, store.eventsInRange(s, e), p.multiDay);
       }
       const [s, e] = dayBounds(p.arg === 'tomorrow' ? 1 : 0, now);
       return agendaText(p.arg, store.eventsInRange(s, e));

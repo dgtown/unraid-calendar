@@ -34,12 +34,12 @@ function parseMessage(raw, ref = new Date(), opts = {}) {
   // Any other question about a date ("what's on friday?", "anything Saturday") is an agenda lookup, never a new event.
   m = lower.match(/^when(?:'s| is| are| was)?\s+(?:my|the|our)?\s*(.+?)$/);
   if (m && !chrono.parse(m[1], ref)[0]) return { type: 'command', cmd: 'find', arg: m[1].trim() };
-  if (/^(?:what|whats|when|where|do i|did i|am i|any|anything|is there|are there|show|list|check|tell me)\b/.test(lower)) {
-    const r = chrono.parse(text, ref, { forwardDate: true })[0];
-    if (r) {
-      const d = r.start.date();
-      return { type: 'command', cmd: 'agenda', arg: /\bweek\b/.test(lower) ? 'weekof' : 'day', date: new Date(d.getFullYear(), d.getMonth(), d.getDate()) };
-    }
+  const questionWord = /^(?:what|whats|when|where|do i|did i|am i|any|anything|is there|are there|show|list|check|tell me)\b/.test(lower);
+  const justARange = /^(?:the\s+)?(?:(?:this|next)\s+(?:week|weekend|month)|weekend|(?:first|1st|second|2nd|third|3rd|fourth|4th|fifth|5th|last)\s+week\s+(?:of|in)\s+[a-z]+\.?(?:\s+\d{4})?)$/.test(lower);
+  const timelessQuestion = /\?\s*$/.test(text) && !(chrono.parse(text, ref)[0]?.start.isCertain('hour'));
+  if (questionWord || justARange || timelessQuestion) {
+    const range = resolveRange(lower, text, ref);
+    if (range) return { type: 'command', cmd: 'agenda', arg: 'range', ...range };
     if (/\bweek\b/.test(lower)) return { type: 'command', cmd: 'agenda', arg: 'week' };
     if (!/\d/.test(lower)) return { type: 'command', cmd: 'agenda', arg: 'today' };
   }
@@ -134,11 +134,102 @@ function parseMessage(raw, ref = new Date(), opts = {}) {
 function finish(leftover, ev) {
   let title = leftover;
   let prev;
-  do { prev = title; title = title.replace(FILLER, '').replace(/^[\s,;:-]+|[\s,;:-]+$/g, '').trim(); } while (title !== prev);
+  do { prev = title; title = title.replace(FILLER, '').replace(/^[\s,;:?!-]+|[\s,;:?!-]+$/g, '').trim(); } while (title !== prev);
   if (!title) title = 'Event';
   title = title.charAt(0).toUpperCase() + title.slice(1);
 
   return { type: 'event', title, ...ev };
 }
 
-module.exports = { parseMessage };
+// ---------------------------------------------------------------------------
+// Date ranges for questions: "second week of november", "in december",
+// "this weekend", "nov 9-15", "next week", "friday".
+// Returns { start: Date, end: Date (exclusive), multiDay: bool } or null.
+// ---------------------------------------------------------------------------
+const MONTHS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+const ORD = { first: 1, '1st': 1, second: 2, '2nd': 2, third: 3, '3rd': 3, fourth: 4, '4th': 4, fifth: 5, '5th': 5 };
+const day0 = d => new Date(d.getFullYear(), d.getMonth(), d.getDate());
+const addDays = (d, n) => new Date(d.getFullYear(), d.getMonth(), d.getDate() + n);
+
+function monthIndex(word) {
+  const i = MONTHS.indexOf(word.slice(0, 3));
+  return i >= 0 && (word.length <= 3 || 'january february march april may june july august september october november december'.includes(word)) ? i : -1;
+}
+// The next occurrence of a month (this month counts), or the given year.
+function monthStart(mi, year, ref) {
+  if (year) return new Date(year, mi, 1);
+  const y = mi < ref.getMonth() ? ref.getFullYear() + 1 : ref.getFullYear();
+  return new Date(y, mi, 1);
+}
+
+function resolveRange(lower, text, ref) {
+  const today = day0(ref);
+  let m;
+
+  // "second week of november", "last week of dec 2027"
+  m = lower.match(/\b(first|1st|second|2nd|third|3rd|fourth|4th|fifth|5th|last)\s+week\s+(?:of|in)\s+([a-z]+)\.?(?:\s+(\d{4}))?/);
+  if (m && monthIndex(m[2]) >= 0) {
+    const first = monthStart(monthIndex(m[2]), m[3] && +m[3], ref);
+    const next = new Date(first.getFullYear(), first.getMonth() + 1, 1);
+    // Weeks run Sunday-Saturday; week 1 is the (possibly partial) week containing the 1st.
+    const week1End = addDays(first, 7 - first.getDay());
+    let start, end;
+    if (m[1] === 'last') {
+      const lastDay = addDays(next, -1);
+      start = addDays(lastDay, -lastDay.getDay());
+      if (start < first) start = first;
+      end = next;
+    } else {
+      const n = ORD[m[1]];
+      start = n === 1 ? first : addDays(week1End, (n - 2) * 7);
+      end = n === 1 ? week1End : addDays(start, 7);
+      if (start >= next) return null;
+      if (end > next) end = next;
+    }
+    return { start, end, multiDay: true };
+  }
+
+  // "this weekend", "next weekend"
+  m = lower.match(/\b(this|next)?\s*weekend\b/);
+  if (m) {
+    let sat = addDays(today, (6 - today.getDay() + 7) % 7);
+    if (today.getDay() === 0) sat = addDays(today, -1); // Sunday: still "this weekend"
+    if (m[1] === 'next') sat = addDays(sat, 7);
+    const start = sat < today ? today : sat;
+    return { start, end: addDays(sat, 2), multiDay: true };
+  }
+
+  // "this month", "next month"
+  m = lower.match(/\b(this|next)\s+month\b/);
+  if (m) {
+    const start = new Date(ref.getFullYear(), ref.getMonth() + (m[1] === 'next' ? 1 : 0), 1);
+    return { start: m[1] === 'this' ? today : start, end: new Date(start.getFullYear(), start.getMonth() + 1, 1), multiDay: true };
+  }
+
+  // "this week", "next week"
+  m = lower.match(/\b(this|next)\s+week\b/);
+  if (m) {
+    const sunday = addDays(today, -today.getDay());
+    if (m[1] === 'this') return { start: today, end: addDays(sunday, 7), multiDay: true };
+    return { start: addDays(sunday, 7), end: addDays(sunday, 14), multiDay: true };
+  }
+
+  // "in december", "december", "for march 2027" (a month with no day number)
+  m = lower.match(/\b(?:in|for|during|of)?\s*([a-z]+)\.?(?:\s+(\d{4}))?$/);
+  if (m && monthIndex(m[1]) >= 0 && m[1].length >= 3 && !/\d{1,2}(?:st|nd|rd|th)?\b/.test(lower.replace(/\d{4}/, ''))) {
+    const start = monthStart(monthIndex(m[1]), m[2] && +m[2], ref);
+    return { start, end: new Date(start.getFullYear(), start.getMonth() + 1, 1), multiDay: true };
+  }
+
+  // Anything chrono understands: "friday", "nov 19", "nov 9-15", "next tuesday"
+  const r = chrono.parse(text, ref, { forwardDate: true })[0];
+  if (r) {
+    const start = day0(r.start.date());
+    if (r.end) return { start, end: addDays(day0(r.end.date()), 1), multiDay: true };
+    if (/\bweek\b/.test(lower)) return { start, end: addDays(start, 7), multiDay: true };
+    return { start, end: addDays(start, 1), multiDay: false };
+  }
+  return null;
+}
+
+module.exports = { parseMessage, resolveRange };

@@ -55,3 +55,16 @@ test('leading "add" is dropped', () => {
   assert.equal(parseMessage('schedule an oil change Dec 12', ref).title, 'Oil change');
   assert.equal(parseMessage('Address change tue', ref).title, 'Address change');
 });
+
+test('agenda ranges', () => {
+  const d = x => `${x.getMonth() + 1}/${x.getDate()}`;
+  const q = t => { const r = parseMessage(t, ref); assert.equal(r.cmd, 'agenda', t); return `${d(r.start)}-${d(r.end)}`; };
+  assert.equal(q('what do i have the second week of november'), '11/8-11/15');
+  assert.equal(q('last week of november'), '11/29-12/1');
+  assert.equal(q('whats on this weekend'), '11/7-11/9');
+  assert.equal(q('what do i have in december'), '12/1-1/1');
+  assert.equal(q('what do i have nov 9-15'), '11/9-11/16');
+  assert.equal(q('next week'), '11/8-11/15');
+  assert.equal(q('anything friday?'), '11/6-11/7');
+  assert.equal(parseMessage('Dinner Friday 7pm?', ref).type, 'event');
+});
