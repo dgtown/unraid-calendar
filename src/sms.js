@@ -51,12 +51,35 @@ async function voipms(method, params = {}) {
   return res.json();
 }
 
+// voip.ms texts are limited to 160 characters. Split longer replies at line
+// breaks, then between words, and number the parts: "(1/3) ...".
+function splitSms(message, max = 160) {
+  message = String(message).trim();
+  if (message.length <= max) return [message];
+  const room = max - 8; // space for "(12/12) "
+  const parts = [];
+  let cur = '';
+  const push = () => { if (cur.trim()) parts.push(cur.trim()); cur = ''; };
+  const add = (piece, sep) => {
+    if (!cur) cur = piece;
+    else if (cur.length + sep.length + piece.length <= room) cur += sep + piece;
+    else { push(); cur = piece; }
+  };
+  for (const line of message.split('\n')) {
+    if (line.length <= room) { add(line, '\n'); continue; }
+    for (let word of line.split(' ')) {
+      while (word.length > room) { add(word.slice(0, room), ' '); word = word.slice(room); }
+      add(word, ' ');
+    }
+  }
+  push();
+  return parts.length === 1 ? parts : parts.map((p, i) => `(${i + 1}/${parts.length}) ${p}`);
+}
+
 async function sendSms(to, message) {
   store.logSms('out', normalize(to), message);
   if (!config.smsEnabled) { console.log(`[sms] (disabled) -> ${to}: ${message}`); return; }
-  // voip.ms SMS is limited to 160 characters; split longer replies.
-  const chunks = message.match(/[\s\S]{1,160}/g) || [];
-  for (const chunk of chunks) {
+  for (const chunk of splitSms(message)) {
     const r = await voipms('sendSMS', { did: config.voipms.did, dst: normalize(to), message: chunk });
     if (r.status !== 'success') console.error('[sms] send failed:', r.status);
   }
@@ -364,4 +387,4 @@ function morningAgenda(now = new Date()) {
   return events.length ? `Good morning! ${agendaText(label, events)}` : `Good morning! Nothing on the calendar ${label}.`;
 }
 
-module.exports = { dailyTime, morningAgenda, parseClock, handleMessage, receive, sendSms, startPolling, status, isAllowed, normalize };
+module.exports = { splitSms, dailyTime, morningAgenda, parseClock, handleMessage, receive, sendSms, startPolling, status, isAllowed, normalize };
