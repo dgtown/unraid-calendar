@@ -21,11 +21,17 @@ A small self-hosted calendar that runs as one Docker container on Unraid.
 | `today`, `tomorrow`, `week` (also "what do I have today?", "appointments tomorrow") | Texts back your agenda |
 | `what's on Friday?`, `anything Saturday?`, `what do I have next week` | Agenda for that day or week (questions never create events) |
 | `second week of November`, `this weekend`, `in December`, `next month`, `Nov 9-15` | Agenda for that range (weeks run Sunday–Saturday) |
-| `when is my haircut?` | Finds the next matching event |
-| `daily 6:30am` / `daily off` / `daily` | Change, stop, or check the morning agenda text (default 7:00 AM) |
-| `undo` | Removes the last event you texted |
+| `find dentist`, `when is my haircut?` | Lists the next matching events ("dentist" also matches "Dentist appt") |
 | `cancel dentist` | Deletes the upcoming event matching "dentist" |
+| `move lunch to 1pm`, `move dentist to Thursday 3pm`, `reschedule haircut to Nov 21` | Moves it. A time alone keeps the day, a day alone keeps the time, and the length stays the same |
+| `push lunch back an hour`, `move dentist 30 min earlier` | Shifts it by that much |
+| `remind me 30 min before soccer`, `remind me about the dentist 1 hour before`, `no reminder for soccer` | Sets or removes a reminder on an existing event |
+| `2` | When more than one event matches a cancel, move or reminder, you get a numbered list; reply with the number |
+| `undo` | Reverses your last text: removes an added event, brings back a cancelled one, or puts a moved one back |
+| `daily 6:30am` / `daily off` / `daily` | Change, stop, or check the morning agenda text (default 7:00 AM) |
 | `help` | Lists commands |
+
+Anything that isn't a command (and has a date) is added as a new event, so `Move-in day Dec 1` still works.
 
 Every new event gets a confirmation text, e.g. `Added: Dentist, Tue, Nov 10, 3:00 PM–4:00 PM. Reply UNDO to remove.`
 Only numbers listed in `ALLOWED_NUMBERS` are accepted; anything else is ignored.
