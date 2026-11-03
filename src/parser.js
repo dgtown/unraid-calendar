@@ -15,7 +15,8 @@ function parseMessage(raw, ref = new Date(), opts = {}) {
   const defaultDurationMin = opts.defaultDurationMin || 60;
   let text = String(raw || '').replace(/\s+/g, ' ').trim();
   if (!text) return { type: 'error', message: 'Empty message.' };
-  const lower = text.toLowerCase().replace(/[.!?]+$/, '');
+  text = text.replace(/[\u2018\u2019]/g, "'").replace(/[\u201C\u201D]/g, '"');
+  const lower = text.toLowerCase().replace(/[.!?\s]+$/, '');
 
   // --- Commands -----------------------------------------------------------
   if (/^(help|\?|commands)$/.test(lower)) return { type: 'command', cmd: 'help' };
@@ -29,7 +30,20 @@ function parseMessage(raw, ref = new Date(), opts = {}) {
   }
   if (new RegExp(`^${ask}tomorrow$`).test(lower)) return { type: 'command', cmd: 'agenda', arg: 'tomorrow' };
   if (new RegExp(`^${ask}(?:this |the )?(week|upcoming|next 7 days|next|list)$`).test(lower)) return { type: 'command', cmd: 'agenda', arg: 'week' };
-  let m = lower.match(/^(?:daily|morning)(?:\s+(?:text|agenda|summary))?(?:\s+(.+))?$/);
+  let m;
+  // Any other question about a date ("what's on friday?", "anything Saturday") is an agenda lookup, never a new event.
+  m = lower.match(/^when(?:'s| is| are| was)?\s+(?:my|the|our)?\s*(.+?)$/);
+  if (m && !chrono.parse(m[1], ref)[0]) return { type: 'command', cmd: 'find', arg: m[1].trim() };
+  if (/^(?:what|whats|when|where|do i|did i|am i|any|anything|is there|are there|show|list|check|tell me)\b/.test(lower)) {
+    const r = chrono.parse(text, ref, { forwardDate: true })[0];
+    if (r) {
+      const d = r.start.date();
+      return { type: 'command', cmd: 'agenda', arg: /\bweek\b/.test(lower) ? 'weekof' : 'day', date: new Date(d.getFullYear(), d.getMonth(), d.getDate()) };
+    }
+    if (/\bweek\b/.test(lower)) return { type: 'command', cmd: 'agenda', arg: 'week' };
+    if (!/\d/.test(lower)) return { type: 'command', cmd: 'agenda', arg: 'today' };
+  }
+  m = lower.match(/^(?:daily|morning)(?:\s+(?:text|agenda|summary))?(?:\s+(.+))?$/);
   if (m) return { type: 'command', cmd: 'daily', arg: (m[1] || '').trim() };
   m = lower.match(/^(?:cancel|delete|remove)\s+(.+)$/);
   if (m) return { type: 'command', cmd: 'cancel', arg: m[1].trim() };

@@ -5,7 +5,7 @@ const { parseMessage } = require('./parser');
 const { describeEvent, timeFmt, dayFmt } = require('./format');
 
 const HELP = 'Text an event like "Dentist tue 3pm" or "Party Sat 2-5 @ Sam\'s remind 1h". ' +
-  'Other commands: TODAY, TOMORROW, WEEK, UNDO, CANCEL <name>, DAILY 7am / DAILY OFF.';
+  'Ask "what do I have Friday?" or "when is my haircut?". Other commands: TODAY, TOMORROW, WEEK, UNDO, CANCEL <name>, DAILY 7am / DAILY OFF.';
 
 // ---------------------------------------------------------------------------
 // Daily agenda time: set by text ("daily 6:30am"), else DAILY_AGENDA_TIME.
@@ -106,6 +106,16 @@ function handleMessage(from, body, now = new Date()) {
         const [s] = dayBounds(0, now);
         return agendaText('the next 7 days', store.eventsInRange(s, s + 7 * 86400000), true);
       }
+      if (p.arg === 'weekof') {
+        const s = p.date.getTime();
+        return agendaText(`the week of ${dayFmt.format(p.date)}`, store.eventsInRange(s, s + 7 * 86400000), true);
+      }
+      if (p.arg === 'day') {
+        const [s, e] = dayBounds(0, p.date);
+        const [t0] = dayBounds(0, now);
+        const label = s === t0 ? 'today' : s === t0 + 86400000 ? 'tomorrow' : `on ${dayFmt.format(p.date)}`;
+        return agendaText(label, store.eventsInRange(s, e));
+      }
       const [s, e] = dayBounds(p.arg === 'tomorrow' ? 1 : 0, now);
       return agendaText(p.arg, store.eventsInRange(s, e));
     }
@@ -121,6 +131,11 @@ function handleMessage(from, body, now = new Date()) {
       if (!t) return 'Try "DAILY 7am", "DAILY 6:30am" or "DAILY OFF".';
       store.kvSet('daily_time', t);
       return `OK, I'll text your agenda every day at ${prettyClock(t)}.`;
+    }
+    case 'find': {
+      const matches = store.findUpcomingByTitle(p.arg, now.getTime());
+      if (!matches.length) return `No upcoming event matching "${p.arg}".`;
+      return matches.map(m => describeEvent(m)).join('\n');
     }
     case 'cancel': {
       const matches = store.findUpcomingByTitle(p.arg, now.getTime());
