@@ -27,6 +27,36 @@ const config = {
   allowedNumbers: list(process.env.ALLOWED_NUMBERS).map(n => n.replace(/\D/g, '').slice(-10)),
 };
 
+// Reverse proxy support -------------------------------------------------------
+// Which proxies may set X-Forwarded-For / -Proto / -Host. Default trusts proxies on
+// this machine and private networks (Nginx Proxy Manager, SWAG, Caddy on the same Unraid box).
+// "off" ignores the headers; "true" trusts any; a number trusts that many hops; or list IPs/subnets.
+function trustProxy(v) {
+  v = (v ?? '').trim();
+  if (!v) return 'loopback, linklocal, uniquelocal';
+  if (/^(off|false|no|0)$/i.test(v)) return false;
+  if (/^(on|true|yes)$/i.test(v)) return true;
+  if (/^\d+$/.test(v)) return parseInt(v, 10);
+  return v;
+}
+config.trustProxy = trustProxy(process.env.TRUST_PROXY);
+
+// Serve the app under a sub-path, e.g. BASE_PATH=/calendar -> https://example.com/calendar/
+function basePath(v) {
+  v = (v || '').trim().replace(/\/+$/, '');
+  if (!v) return '';
+  if (!v.startsWith('/')) v = '/' + v;
+  if (!/^\/[A-Za-z0-9._~\/-]*$/.test(v)) throw new Error(`BASE_PATH has unsupported characters: ${v}`);
+  return v;
+}
+config.basePath = basePath(process.env.BASE_PATH);
+
+// Wrong-password lockout: after LOGIN_MAX_ATTEMPTS bad tries from one address within
+// LOGIN_LOCKOUT_MIN minutes, that address is refused for LOGIN_LOCKOUT_MIN minutes. 0 disables.
+const int = (v, d) => { const n = parseInt(v, 10); return Number.isFinite(n) && n >= 0 ? n : d; };
+config.loginMaxAttempts = int(process.env.LOGIN_MAX_ATTEMPTS, 10);
+config.loginLockoutMin = int(process.env.LOGIN_LOCKOUT_MIN, 15) || 15;
+
 config.smsEnabled = Boolean(config.voipms.user && config.voipms.password && config.voipms.did);
 
 module.exports = config;

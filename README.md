@@ -82,6 +82,10 @@ Prefer compose? Use `docker-compose.yml` with the Compose Manager plugin.
 | `DAILY_AGENDA_TIME` | When to text the day's agenda (default `07:00`; `off` to disable). Texting `DAILY ...` overrides it. |
 | `VOIPMS_POLL_SECONDS` | How often to check for texts (default 30). |
 | `DEFAULT_DURATION_MIN` | Length of events with no end time (default 60). |
+| `BASE_PATH` | Serve the app under a sub-path such as `/calendar` (default: the root). |
+| `TRUST_PROXY` | Which proxies may send `X-Forwarded-*` headers. Default: this machine and private networks. `off`, `true`, a hop count, or IPs/subnets like `172.18.0.0/16`. |
+| `LOGIN_MAX_ATTEMPTS` | Wrong passwords (or feed tokens) from one address before it's blocked (default 10, `0` = off). |
+| `LOGIN_LOCKOUT_MIN` | How long that block lasts, and the window the attempts are counted in (default 15). |
 
 ## Seeing it on your phone
 
@@ -89,8 +93,71 @@ Prefer compose? Use `docker-compose.yml` with the Compose Manager plugin.
 - **Phone calendar (read-only for now):** install **ICSx⁵** (Android) and subscribe to
   `http://<unraid-ip>:8080/calendar.ics?token=<FEED_TOKEN>`. On iPhone: Settings → Calendar → Accounts →
   Add Subscribed Calendar.
-- **Away from home:** install the Tailscale plugin on Unraid and the Tailscale app on your phone, then use the
+- **Away from home:** use a reverse proxy (see below), or install the Tailscale plugin on Unraid and the Tailscale app on your phone, then use the
   Tailscale address instead of the LAN IP. Texting works from anywhere without this.
+
+## Behind a reverse proxy
+
+You can put the calendar behind Nginx Proxy Manager, SWAG, Caddy or Cloudflare Tunnel to reach it at
+`https://calendar.example.com` from anywhere.
+
+- **Set `APP_PASSWORD` first.** The proxy makes the page reachable from the internet. Always use HTTPS, since the
+  browser sends the password with every request.
+- After `LOGIN_MAX_ATTEMPTS` wrong passwords (default 10) from one address, that address gets "Too many failed
+  attempts" for 15 minutes. Wrong feed tokens count too. Restarting the container clears all blocks.
+- The app reads the visitor's real address and `https` from the proxy's `X-Forwarded-For` / `X-Forwarded-Proto`
+  headers. By default it believes them only from proxies on the same machine or a private network (`10.x`,
+  `172.16–31.x`, `192.168.x`), which covers a proxy container on Unraid. If the app is reachable directly from the
+  internet as well, set `TRUST_PROXY` to your proxy's address only.
+- Health checks stay at `/healthz` even with `BASE_PATH`.
+
+**Nginx Proxy Manager:** Hosts → Proxy Hosts → Add. Domain `calendar.example.com`, scheme `http`, forward host
+your Unraid IP, port `8080`. On the SSL tab request a Let's Encrypt certificate and tick *Force SSL*. NPM sends the
+`X-Forwarded-*` headers on its own.
+
+**SWAG** (`/mnt/user/appdata/swag/nginx/proxy-confs/calendar.subdomain.conf`):
+
+```nginx
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    server_name calendar.*;
+    include /config/nginx/ssl.conf;
+    client_max_body_size 1m;
+
+    location / {
+        include /config/nginx/proxy.conf;      # sets X-Forwarded-For / -Proto / -Host
+        include /config/nginx/resolver.conf;
+        set $upstream_app 192.168.1.10;        # your Unraid IP, or "calendar" on a shared Docker network
+        set $upstream_port 8080;
+        set $upstream_proto http;
+        proxy_pass $upstream_proto://$upstream_app:$upstream_port;
+    }
+}
+```
+
+**Plain nginx under a sub-path** (with `BASE_PATH=/calendar`):
+
+```nginx
+location /calendar/ {
+    proxy_pass http://192.168.1.10:8080;      # no trailing slash: keep the /calendar prefix
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Forwarded-Host $host;
+}
+```
+
+**Caddy** (adds the headers and HTTPS itself):
+
+```caddy
+calendar.example.com {
+    reverse_proxy 192.168.1.10:8080
+}
+```
+
+With a proxy in place, the phone feed becomes `https://calendar.example.com/calendar.ics?token=<FEED_TOKEN>` and
+the optional voip.ms SMS URL Callback can point at the same host.
 
 ## Development
 

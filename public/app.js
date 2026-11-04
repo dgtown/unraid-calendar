@@ -149,7 +149,7 @@
           : 'off (set the VOIPMS_* settings in the container)'}</p>
         <p><b>Morning agenda text:</b> ${s.dailyAgenda === 'off' ? 'off (text DAILY 7am to turn on)' : `every day at ${esc(s.dailyAgenda)} (text DAILY OFF to stop)`}</p>
         <p><b>Phone subscription feed:</b> ${s.feed
-          ? `<code>${esc(location.origin)}/calendar.ics?token=YOUR_FEED_TOKEN</code>`
+          ? `<code>${esc(new URL('calendar.ics', location.href).href.split('?')[0])}?token=YOUR_FEED_TOKEN</code>`
           : 'off (set FEED_TOKEN in the container)'}</p>
         <p><b>Backups:</b> ${s.backups.length ? `${s.backups.length} nightly copies in appdata/backups, newest ${esc(s.backups[s.backups.length - 1])}` : 'none yet'}</p>
         <p><b>Recent texts</b></p>

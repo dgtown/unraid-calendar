@@ -10,47 +10,79 @@ const { parseMessage } = require('./parser');
 const { describeEvent } = require('./format');
 const recur = require('./recur');
 const { startReminders } = require('./reminders');
+const { createLimiter } = require('./limiter');
 
 const app = express();
 app.disable('x-powered-by');
-app.use(express.json({ limit: '100kb' }));
+// Behind a reverse proxy, take the client's address and https from X-Forwarded-* (see TRUST_PROXY).
+app.set('trust proxy', config.trustProxy);
+app.use((req, res, next) => {
+  res.set({
+    'X-Content-Type-Options': 'nosniff',
+    'X-Frame-Options': 'SAMEORIGIN',
+    'Referrer-Policy': 'no-referrer', // keeps ?token=... out of Referer headers
+  });
+  next();
+});
+
+// Docker health check always uses /healthz, even when BASE_PATH is set.
+app.get('/healthz', (req, res) => res.json({ ok: true }));
+
+// Everything else lives on a router mounted at BASE_PATH (or /).
+const router = express.Router();
+router.use(express.json({ limit: '100kb' }));
+
+const limiter = createLimiter({ maxAttempts: config.loginMaxAttempts, windowMs: config.loginLockoutMin * 60000 });
+function tooMany(req, res) {
+  const ms = limiter.blockedFor(req.ip);
+  if (!ms) return false;
+  res.set('Retry-After', String(Math.ceil(ms / 1000))).status(429).send('Too many failed attempts. Try again later.\n');
+  return true;
+}
 
 const safeEqual = (a, b) => {
   const x = Buffer.from(String(a)), y = Buffer.from(String(b));
   return x.length === y.length && crypto.timingSafeEqual(x, y);
 };
-const tokenOk = req => config.feedToken && safeEqual(req.query.token || '', config.feedToken);
-
-app.get('/healthz', (req, res) => res.json({ ok: true }));
+// Checks ?token=FEED_TOKEN, counting wrong tokens toward the lockout. Sends the error itself.
+function tokenOk(req, res, message) {
+  if (tooMany(req, res)) return false;
+  if (config.feedToken && safeEqual(req.query.token || '', config.feedToken)) return true;
+  if (config.feedToken && req.query.token) limiter.fail(req.ip);
+  res.status(403).send(message);
+  return false;
+}
 
 // Read-only subscription feed for phones (ICSx5 on Android, "Subscribed calendar" on iPhone).
-app.get('/calendar.ics', (req, res) => {
-  if (!tokenOk(req)) return res.status(403).send('Set FEED_TOKEN and add ?token=... to the URL.\n');
+router.get('/calendar.ics', (req, res) => {
+  if (!tokenOk(req, res, 'Set FEED_TOKEN and add ?token=... to the URL.\n')) return;
   res.type('text/calendar; charset=utf-8').send(toICS(store.allEvents()));
 });
 
 // Optional instant delivery: voip.ms "SMS URL Callback" pointed at
 // https://your-host/sms/voipms?token=FEED_TOKEN&id={ID}&from={FROM}&message={MESSAGE}
-app.get('/sms/voipms', async (req, res) => {
-  if (!tokenOk(req)) return res.status(403).send('forbidden');
+router.get('/sms/voipms', async (req, res) => {
+  if (!tokenOk(req, res, 'forbidden')) return;
   res.send('ok'); // voip.ms expects a quick "ok"
   try { await sms.receive(req.query.id || null, req.query.from, req.query.message || ''); } catch (e) { console.error(e); }
 });
 
 // Everything below needs the web password (if one is set).
-app.use((req, res, next) => {
+router.use((req, res, next) => {
   if (!config.appPassword) return next();
+  if (tooMany(req, res)) return;
   const [scheme, encoded] = (req.headers.authorization || '').split(' ');
   if (scheme === 'Basic' && encoded) {
     const pass = Buffer.from(encoded, 'base64').toString().split(':').slice(1).join(':');
-    if (safeEqual(pass, config.appPassword)) return next();
+    if (safeEqual(pass, config.appPassword)) { limiter.success(req.ip); return next(); }
+    limiter.fail(req.ip); // only real attempts count, not the browser's first password-less request
   }
-  res.set('WWW-Authenticate', 'Basic realm="Calendar"').status(401).send('Login required');
+  res.set('WWW-Authenticate', 'Basic realm="Calendar", charset="UTF-8"').status(401).send('Login required');
 });
 
-app.get('/vendor/fullcalendar.js', (req, res) =>
+router.get('/vendor/fullcalendar.js', (req, res) =>
   res.sendFile(path.join(__dirname, '..', 'node_modules', 'fullcalendar', 'index.global.min.js'), { maxAge: '7d' }));
-app.use(express.static(path.join(__dirname, '..', 'public')));
+router.use(express.static(path.join(__dirname, '..', 'public')));
 
 // ---------------------------------------------------------------------------
 // JSON API
@@ -101,17 +133,17 @@ const wrap = fn => (req, res) => {
   try { fn(req, res); } catch (err) { res.status(400).json({ error: err.message }); }
 };
 
-app.get('/api/events', wrap((req, res) => {
+router.get('/api/events', wrap((req, res) => {
   const from = req.query.start ? new Date(req.query.start).getTime() : 0;
   const to = req.query.end ? new Date(req.query.end).getTime() : 8640000000000000;
   res.json(store.eventsInRange(from, to).map(toApi));
 }));
 
-app.post('/api/events', wrap((req, res) => {
+router.post('/api/events', wrap((req, res) => {
   res.status(201).json(toApi(store.createEvent({ ...fromApi(req.body), source: 'web' })));
 }));
 
-app.put('/api/events/:id', wrap((req, res) => {
+router.put('/api/events/:id', wrap((req, res) => {
   const cur = store.getEvent(req.params.id);
   if (!cur) return res.status(404).json({ error: 'Not found' });
   const patch = fromApi(req.body, true);
@@ -133,7 +165,7 @@ app.put('/api/events/:id', wrap((req, res) => {
   res.json(toApi(store.updateEvent(cur.id, patch)));
 }));
 
-app.delete('/api/events/:id', wrap((req, res) => {
+router.delete('/api/events/:id', wrap((req, res) => {
   const cur = store.getEvent(req.params.id);
   if (!cur) return res.status(404).end();
   const occ = Number(req.query.occurrence);
@@ -144,7 +176,7 @@ app.delete('/api/events/:id', wrap((req, res) => {
 }));
 
 // "Quick add" box: same parser as text messages.
-app.post('/api/quick-add', wrap((req, res) => {
+router.post('/api/quick-add', wrap((req, res) => {
   const p = parseMessage(req.body.text, new Date(), { defaultDurationMin: config.defaultDurationMin });
   if (p.type !== 'event') return res.status(400).json({ error: p.message || 'Commands only work by text message.' });
   const ev = store.createEvent({
@@ -154,7 +186,7 @@ app.post('/api/quick-add', wrap((req, res) => {
   res.status(201).json({ event: toApi(ev), summary: describeEvent(ev) + (ev.rrule ? `, repeats ${recur.describeRule(ev)}` : '') });
 }));
 
-app.get('/api/status', (req, res) => {
+router.get('/api/status', (req, res) => {
   res.json({
     timezone: config.tz,
     sms: { enabled: config.smsEnabled, did: config.voipms.did || null, allowed: config.allowedNumbers.length,
@@ -166,9 +198,19 @@ app.get('/api/status', (req, res) => {
   });
 });
 
+if (config.basePath) {
+  // "/calendar" -> "/calendar/" so the page's relative links resolve under the sub-path.
+  app.get(config.basePath, (req, res, next) => {
+    const q = req.originalUrl.indexOf('?');
+    if ((q >= 0 ? req.originalUrl.slice(0, q) : req.originalUrl).endsWith('/')) return next();
+    res.redirect(308, config.basePath + '/' + (q >= 0 ? req.originalUrl.slice(q) : ''));
+  });
+}
+app.use(config.basePath || '/', router);
+
 if (require.main === module) {
   app.listen(config.port, () => {
-    console.log(`Calendar listening on :${config.port} (TZ ${config.tz}, data in ${config.dataDir})`);
+    console.log(`Calendar listening on :${config.port}${config.basePath ? ` at ${config.basePath}/` : ''} (TZ ${config.tz}, data in ${config.dataDir})`);
     sms.startPolling();
     startReminders();
   });

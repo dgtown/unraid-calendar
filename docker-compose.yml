@@ -19,3 +19,7 @@ services:
       ALLOWED_NUMBERS: ""             # who may text it, comma separated, e.g. 5559876543
       VOIPMS_POLL_SECONDS: "30"
       DAILY_AGENDA_TIME: "07:00"      # morning agenda text, or "off"
+      # Reverse proxy (optional):
+      # BASE_PATH: "/calendar"        # only if served under a sub-path
+      # TRUST_PROXY: ""               # default trusts local/private proxies; "off" to ignore X-Forwarded-*
+      # LOGIN_MAX_ATTEMPTS: "10"      # wrong passwords before a 15 min lockout, 0 = off
