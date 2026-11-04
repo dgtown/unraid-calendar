@@ -115,6 +115,21 @@ You can put the calendar behind Nginx Proxy Manager, SWAG, Caddy or Cloudflare T
 your Unraid IP, port `8080`. On the SSL tab request a Let's Encrypt certificate and tick *Force SSL*. NPM sends the
 `X-Forwarded-*` headers on its own.
 
+**pfSense (HAProxy package):** Services → HAProxy.
+
+- *Backend*: server address = your Unraid IP, port `8080`, no SSL. Tick **Use "forwardfor" option** so the app sees
+  each visitor's real address (without it every visitor looks like pfSense, and the login lockout would block
+  everyone at once).
+- *Frontend*: listen on 443 with SSL offloading and your certificate (ACME package), and under
+  **Advanced pass thru** add:
+
+  ```
+  http-request set-header X-Forwarded-Proto https if { ssl_fc }
+  ```
+
+- pfSense's LAN address is private, so the default `TRUST_PROXY` already accepts it. To be stricter, set
+  `TRUST_PROXY` to pfSense's LAN IP (e.g. `192.168.1.1`).
+
 **SWAG** (`/mnt/user/appdata/swag/nginx/proxy-confs/calendar.subdomain.conf`):
 
 ```nginx
