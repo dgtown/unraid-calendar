@@ -100,3 +100,18 @@ test('event length: "for 4 hours"', () => {
   assert.equal(r.reminderMin, 60);
   assert.equal(local(r.end), '2026-11-3 16:00');
 });
+
+test('relative dates: "a week from today", "next week tue"', () => {
+  const fri = new Date(2026, 10, 6, 14); // Fri Nov 6
+  const ev = t => { const r = parseMessage(t, fri); return `${r.title} ${local(r.start)}${r.allDay ? ' allday' : ''}`; };
+  assert.equal(ev('add an appointment a week from today'), 'Appointment 2026-11-13 0:00 allday');
+  assert.equal(ev('Dentist a week from today at 3pm'), 'Dentist 2026-11-13 15:00');
+  assert.equal(ev('Dentist 2 weeks from tomorrow 10am'), 'Dentist 2026-11-21 10:00');
+  assert.equal(ev('Dentist a week from monday'), 'Dentist 2026-11-16 0:00 allday');
+  assert.equal(ev('Dentist 3 days from now 9am'), 'Dentist 2026-11-9 9:00');
+  assert.equal(ev('Dentist next week tue 3pm'), 'Dentist 2026-11-10 15:00');
+  assert.equal(ev('Dentist tuesday next week at 3'), 'Dentist 2026-11-10 15:00');
+  assert.equal(ev('Haircut a month from today'), 'Haircut 2026-12-6 0:00 allday');
+  const q = parseMessage('what do i have a week from today', fri);
+  assert.equal(`${q.cmd} ${local(q.start)}`, 'agenda 2026-11-13 0:00');
+});

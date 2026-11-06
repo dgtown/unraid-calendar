@@ -16,6 +16,7 @@ function parseMessage(raw, ref = new Date(), opts = {}) {
   let text = String(raw || '').replace(/\s+/g, ' ').trim();
   if (!text) return { type: 'error', message: 'Empty message.' };
   text = text.replace(/[\u2018\u2019]/g, "'").replace(/[\u201C\u201D]/g, '"');
+  text = relativeDates(text, ref);
   const lower = text.toLowerCase().replace(/[.!?\s]+$/, '');
 
   // --- Commands -----------------------------------------------------------
@@ -120,6 +121,37 @@ function parseMessage(raw, ref = new Date(), opts = {}) {
   }
 
   return finish(leftover, { allDay: !hasTime, start, end, location, reminderMin }, rec);
+}
+
+// ---------------------------------------------------------------------------
+// Relative dates chrono gets wrong, rewritten to a plain date ("Nov 13 2026"):
+// "a week from today", "2 weeks from tomorrow", "a week from Friday",
+// "3 days from now", "next week Tue" / "Tuesday next week".
+// ---------------------------------------------------------------------------
+const MONTH_ABBR = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const NUMW = { a: 1, an: 1, one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10 };
+const WDAY = '(sun(?:day)?|mon(?:day)?|tue(?:s(?:day)?)?|wed(?:nesday)?|thu(?:r(?:s(?:day)?)?)?|fri(?:day)?|sat(?:urday)?)';
+const wdayIndex = w => ['su', 'mo', 'tu', 'we', 'th', 'fr', 'sa'].indexOf(w.slice(0, 2).toLowerCase());
+const plainDate = d => `${MONTH_ABBR[d.getMonth()]} ${d.getDate()} ${d.getFullYear()}`;
+
+function relativeDates(text, ref) {
+  const today = new Date(ref.getFullYear(), ref.getMonth(), ref.getDate());
+  const nextWeekday = (i, from = today) => addDays(from, ((i - from.getDay() + 7) % 7) || 7);
+  text = text.replace(new RegExp(`\\b(?:(\\d+|an?|one|two|three|four|five|six|seven|eight|nine|ten)\\s+(day|week|month)s?|(?:the\\s+)?(next)\\s+(day|week|month))\\s+(?:from|after)\\s+(today|now|tomorrow|(?:this\\s+|next\\s+)?${WDAY})\\b`, 'gi'),
+    (all, n, unit, nxt, unit2, base) => {
+      const count = nxt ? 1 : (NUMW[n.toLowerCase()] || parseInt(n, 10));
+      const u = (unit || unit2).toLowerCase();
+      const b = base.toLowerCase();
+      let d = b === 'tomorrow' ? addDays(today, 1) : /^(today|now)$/.test(b) ? today
+        : nextWeekday(wdayIndex(b.replace(/^(this|next)\s+/, '')), b.startsWith('next') ? addDays(today, 7 - today.getDay() - 1) : today);
+      d = u === 'month' ? new Date(d.getFullYear(), d.getMonth() + count, d.getDate()) : addDays(d, count * (u === 'week' ? 7 : 1));
+      return plainDate(d);
+    });
+  // "next week tuesday", "next week on tue", "tuesday next week"
+  const nextWeekDay = i => addDays(addDays(today, -today.getDay() + 7), i);
+  text = text.replace(new RegExp(`\\bnext\\s+week\\s+(?:on\\s+)?${WDAY}\\b`, 'gi'), (all, w) => plainDate(nextWeekDay(wdayIndex(w))));
+  text = text.replace(new RegExp(`\\b(?:on\\s+)?${WDAY}\\s+(?:of\\s+)?next\\s+week\\b`, 'gi'), (all, w) => plainDate(nextWeekDay(wdayIndex(w))));
+  return text;
 }
 
 // ---------------------------------------------------------------------------
