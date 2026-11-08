@@ -21,9 +21,9 @@ header { display: flex; gap: 8px; padding: 10px 12px; border-bottom: 1px solid v
 input, select, textarea { font: inherit; color: var(--fg); background: var(--bg); border: 1px solid var(--line);
   border-radius: 8px; padding: 8px 10px; width: 100%; }
 input[type=checkbox] { width: auto; }
-button { font: inherit; border: 0; border-radius: 8px; padding: 8px 14px; background: var(--accent); color: var(--accent-fg);
+button, a.button { font: inherit; text-decoration: none; display: inline-flex; align-items: center; border: 0; border-radius: 8px; padding: 8px 14px; background: var(--accent); color: var(--accent-fg);
   cursor: pointer; white-space: nowrap; }
-button.secondary { background: transparent; color: var(--fg); border: 1px solid var(--line); }
+button.secondary, a.button.secondary { background: transparent; color: var(--fg); border: 1px solid var(--line); }
 button.danger { background: transparent; color: var(--danger); border: 1px solid var(--danger); }
 main { flex: 1; padding: 8px 12px 12px; min-height: 0; }
 #toast { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); background: var(--fg); color: var(--bg);
