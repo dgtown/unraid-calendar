@@ -186,6 +186,13 @@ router.post('/api/quick-add', wrap((req, res) => {
   res.status(201).json({ event: toApi(ev), summary: describeEvent(ev) + (ev.rrule ? `, repeats ${recur.describeRule(ev)}` : '') });
 }));
 
+// "Download" button: the whole calendar as a file (works without FEED_TOKEN, uses the web password).
+router.get('/api/export.ics', (req, res) => {
+  const day = new Date().toISOString().slice(0, 10);
+  res.set('Content-Disposition', `attachment; filename="calendar-${day}.ics"`);
+  res.type('text/calendar; charset=utf-8').send(toICS(store.allEvents()));
+});
+
 router.get('/api/status', (req, res) => {
   res.json({
     timezone: config.tz,

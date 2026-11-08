@@ -48,6 +48,15 @@ test('wrong feed tokens count too', async () => {
   assert.equal((await get('/calendar/calendar.ics?token=feedtoken123', c)).status, 429);
 });
 
+test('download button returns the calendar as a file, behind the web password', async () => {
+  assert.equal((await get('/calendar/api/export.ics')).status, 401);
+  const r = await get('/calendar/api/export.ics', auth('secret'));
+  assert.equal(r.status, 200);
+  assert.match(r.headers.get('content-type'), /text\/calendar/);
+  assert.match(r.headers.get('content-disposition'), /attachment; filename="calendar-\d{4}-\d{2}-\d{2}\.ics"/);
+  assert.match(await r.text(), /BEGIN:VCALENDAR/);
+});
+
 test('forwarded proto is trusted from a local proxy', async () => {
   app.get('/__proto', (req, res) => res.json({ secure: req.secure, ip: req.ip, host: req.hostname }));
   const r = await (await get('/__proto', { 'X-Forwarded-Proto': 'https', 'X-Forwarded-For': '203.0.113.1', 'X-Forwarded-Host': 'cal.example.com' })).json();

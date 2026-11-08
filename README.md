@@ -94,6 +94,9 @@ Prefer compose? Use `docker-compose.yml` with the Compose Manager plugin.
 - **Phone calendar (read-only for now):** install **ICSx⁵** (Android) and subscribe to
   `http://<unraid-ip>:8080/calendar.ics?token=<FEED_TOKEN>`. On iPhone: Settings → Calendar → Accounts →
   Add Subscribed Calendar.
+- **Copy into Google Calendar / Outlook:** click **⬇ Download** at the top of the web app to save a `.ics` file of
+  every event, then in Google Calendar go to Settings → Import & export → Import. This is a one-time copy; use the
+  subscription feed above if you want it to keep updating.
 - **Away from home:** use a reverse proxy (see below), or install the Tailscale plugin on Unraid and the Tailscale app on your phone, then use the
   Tailscale address instead of the LAN IP. Texting works from anywhere without this.
 
