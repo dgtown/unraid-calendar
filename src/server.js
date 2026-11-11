@@ -11,6 +11,7 @@ const { describeEvent } = require('./format');
 const recur = require('./recur');
 const { startReminders } = require('./reminders');
 const { createLimiter } = require('./limiter');
+const { buildDisplay } = require('./display');
 
 const app = express();
 app.disable('x-powered-by');
@@ -57,6 +58,17 @@ function tokenOk(req, res, message) {
 router.get('/calendar.ics', (req, res) => {
   if (!tokenOk(req, res, 'Set FEED_TOKEN and add ?token=... to the URL.\n')) return;
   res.type('text/calendar; charset=utf-8').send(toICS(store.allEvents()));
+});
+
+// Compact agenda for the Cheap Yellow Display (see display/README.md). ?days=1..14, default 7.
+router.get('/api/display', (req, res) => {
+  if (!tokenOk(req, res, '{"error":"Set FEED_TOKEN and add ?token=... to the URL."}')) return;
+  const days = Math.min(14, Math.max(1, parseInt(req.query.days, 10) || 7));
+  const now = Date.now();
+  const d = new Date(now);
+  const from = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  const to = new Date(d.getFullYear(), d.getMonth(), d.getDate() + days).getTime();
+  res.set('Cache-Control', 'no-store').json(buildDisplay(store.eventsInRange(from, to), now, days));
 });
 
 // Optional instant delivery: voip.ms "SMS URL Callback" pointed at

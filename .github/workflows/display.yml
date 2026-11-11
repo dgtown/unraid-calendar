@@ -1,0 +1,35 @@
+name: Build display firmware
+
+on:
+  push:
+    branches: [main]
+    paths: ['display/**', '.github/workflows/display.yml']
+  pull_request:
+    paths: ['display/**', '.github/workflows/display.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        env: [cyd, cyd2usb]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/cache@v4
+        with:
+          path: ~/.platformio
+          key: pio-${{ hashFiles('display/platformio.ini') }}
+      - run: pip install platformio
+      - run: pio run -d display -e ${{ matrix.env }}
+      - run: cp display/.pio/build/${{ matrix.env }}/calendar-display-factory.bin calendar-display-${{ matrix.env }}.bin
+      - uses: actions/upload-artifact@v4
+        with:
+          name: calendar-display-${{ matrix.env }}
+          path: calendar-display-${{ matrix.env }}.bin

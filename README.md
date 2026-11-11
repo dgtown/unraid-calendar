@@ -100,6 +100,12 @@ Prefer compose? Use `docker-compose.yml` with the Compose Manager plugin.
 - **Away from home:** use a reverse proxy (see below), or install the Tailscale plugin on Unraid and the Tailscale app on your phone, then use the
   Tailscale address instead of the LAN IP. Texting works from anywhere without this.
 
+## On a desk display
+
+`display/` has firmware for the ESP32 "Cheap Yellow Display" (ESP32-2432S028R) that shows the next few
+days of the calendar. It reads `/api/display?token=<FEED_TOKEN>`, a small JSON agenda with times already
+formatted in the app's time zone (`&days=1..14`, default 7). See [display/README.md](display/README.md).
+
 ## Behind a reverse proxy
 
 You can put the calendar behind Nginx Proxy Manager, SWAG, Caddy or Cloudflare Tunnel to reach it at
