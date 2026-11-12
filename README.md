@@ -16,9 +16,13 @@ A small self-hosted calendar that runs as one Docker container on Unraid.
 | `Party Saturday 2-5` | Saturday 2–5pm (bare 1–7 o'clock times are assumed PM) |
 | `Golf Sat 10am for 4 hours`, `Meeting tue 2pm 90 min`, `Cottage Dec 4 for 3 days` | Sets how long it lasts (otherwise 1 hour) |
 | `Dentist a week from today 3pm`, `2 weeks from tomorrow`, `a week from Friday`, `3 days from now`, `next week Tue 3pm` | Relative dates |
+| `Dentist tomorrow 3`, `Mtg tmw 9`, `dr appt wed 11a`, `Kids dentist Thursday 345`, `Soccer sat @ 10`, `Meeting thursday between 2 and 4` | Texting shorthand works: a bare hour after the day, `tmw`/`tmrw`, `11a`/`4p`, `345` for 3:45 |
+| `Dinner at 6` | No day given: today if 6 is still ahead, otherwise tomorrow |
+| `Doctor on the 15th at 2pm`, `Haircut 11-20` | The next 15th; 11-20 is read as Nov 20 |
+| `Thanksgiving dinner 4pm`, `New years eve party`, `Camping this weekend` | Holiday names count as dates (Thanksgiving follows your `TZ`: October in Canada, November otherwise); a weekend is two days |
 | `Oil change Dec 12` | All-day event |
 | `Vacation Dec 20 - Dec 27` | Multi-day event |
-| `Doctor thu 9am @ Main St Clinic` | Adds a location |
+| `Doctor thu 9am @ Main St Clinic`, `Dinner at Olive Garden friday 6pm` | Adds a location (with "at", the place needs a capital letter) |
 | `Soccer every Saturday 10am`, `Gym every mon, wed and fri 6pm`, `Standup every weekday 9am` | Repeating event (also `every other week`, `daily`, `monthly on the 1st`, `every 15th`, `Mom's birthday every Mar 14`, `... until Dec 19`) |
 | `... remind 30m` / `remind me 2 hours` / `remind` | Texts you a reminder (default 30 min) |
 | `today`, `tomorrow`, `week` (also "what do I have today?", "appointments tomorrow") | Texts back your agenda |
