@@ -281,7 +281,7 @@ void drawMessage(const String &title, const std::vector<String> &lines, uint16_t
 
 // In the month and day views the top bar has an arrow at each end: tap them for the previous / next
 // month or day (swiping does the same, but is fiddly on this kind of touch panel).
-static const int ARROW_ZONE = 64;  // width of the tap area around each arrow
+static const int ARROW_ZONE = 90;  // width of the tap area around each arrow
 int headerNextX = W;               // taps at or right of this are "next"
 
 void drawHeader() {
@@ -302,9 +302,9 @@ void drawHeader() {
   headerNextX = W;
   if (arrows) {
     int my = HEADER_H / 2, rx = W - clockW - 12;  // rx: tip of the right arrow
-    tft.fillTriangle(8, my, 20, my - 8, 20, my + 8, C_HEADER_TEXT);
-    tft.fillTriangle(rx, my, rx - 12, my - 8, rx - 12, my + 8, C_HEADER_TEXT);
-    headerNextX = rx - 12 - (ARROW_ZONE - 12) / 2;
+    tft.fillTriangle(6, my, 22, my - 10, 22, my + 10, C_HEADER_TEXT);
+    tft.fillTriangle(rx + 2, my, rx - 14, my - 10, rx - 14, my + 10, C_HEADER_TEXT);
+    headerNextX = rx - 6 - ARROW_ZONE / 2;
   }
   if (clock.length()) {
     tft.setTextDatum(MR_DATUM);
@@ -1204,7 +1204,8 @@ void onSwipe(int dir);
 void onTap(int x, int y) {
   if (wakeTouch()) return;
   // The month view's row of weekday names does nothing itself, so it counts as top bar: a bigger target.
-  int barH = view == VIEW_MONTH ? BODY_Y + WEEKDAY_H : HEADER_H;
+  // In a day the bar's tap area also reaches a little below it.
+  int barH = view == VIEW_MONTH ? BODY_Y + WEEKDAY_H : view == VIEW_DAY ? HEADER_H + 16 : HEADER_H;
   if (y < barH && (view == VIEW_MONTH || view == VIEW_DAY) && (x < ARROW_ZONE || x >= headerNextX)) {
     onSwipe(x < ARROW_ZONE ? -1 : 1);  // arrows: previous / next month or day
     return;
