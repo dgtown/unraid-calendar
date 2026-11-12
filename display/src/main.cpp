@@ -774,6 +774,7 @@ bool fetchDay(int y, int m, int d) {
 // Setup portal (Wi-Fi + calendar settings), served by the display itself
 // ---------------------------------------------------------------------------------------------
 bool settingsSaved = false;
+String setupReason;  // shown at the bottom of the setup screen
 
 void showSetupScreen(WiFiManager *) {
   setBacklight(100);
@@ -785,11 +786,17 @@ void showSetupScreen(WiFiManager *) {
     ">http://192.168.4.1",
     "3. Tap Configure WiFi, pick your network, enter the calendar address and token, then Save.",
   });
+  tft.setTextFont(2);
+  tft.setTextDatum(BL_DATUM);
+  tft.setTextColor(C_DIM);
+  tft.drawString("(" + setupReason + ")", 12, H - 4);
 }
 
 // Shows the setup portal, saves what was entered and restarts. Only opened on first start (nothing
 // saved yet) or when someone holds the screen: a Wi-Fi that's slow to come back never opens it.
-void runPortal() {
+void runPortal(const char *why) {
+  setupReason = why;
+  Serial.printf("Opening setup: %s\n", why);
   WiFiManager wm;
   String days = String(cfg.days), refresh = String(cfg.refreshMin);
   String dimFrom = String(cfg.dimFrom), dimTo = String(cfg.dimTo), dimLevel = String(cfg.dimLevel);
@@ -932,6 +939,11 @@ void onSwipe(int dir) {
 void handleTouch() {
   int x, y;
   uint32_t ms = millis();
+  // The touch chip can report phantom presses for a while after power-up: ignore it at first.
+  if (ms < 10000) {
+    readTouch(x, y);
+    return;
+  }
   if (readTouch(x, y)) {
     touchSeenMs = ms;
     if (touchDown) {
@@ -946,7 +958,7 @@ void handleTouch() {
       touchY = touchLastY = y;
     } else if (!longPressFired && ms - touchStartMs > 5000) {
       longPressFired = true;
-      runPortal();  // restarts when done
+      runPortal("screen held for 5 seconds");  // restarts when done
     }
   } else if (touchDown && ms - touchSeenMs > 80) {  // released (with a little debounce)
     touchDown = false;
@@ -982,24 +994,14 @@ void setup() {
   ts.begin(touchSpi);
   ts.setRotation(cfg.flip ? 3 : 1);
 
-  drawMessage("Calendar", {"Starting...", "", "Hold the screen to open setup."});
-  // Setup only if the screen is held for the whole 2 seconds; a stray reading at power-up
-  // (the touch chip can report one) must not throw the display into setup.
-  delay(300);
-  int held = 0;
-  for (int i = 0; i < 20; i++) {
-    int x, y;
-    if (readTouch(x, y)) held++;
-    delay(100);
-  }
-  bool setupRequested = held >= 18;
-
   WiFi.mode(WIFI_STA);
   WiFi.setAutoReconnect(true);
   String ssid = savedSsid();
-  if (setupRequested || cfg.url.isEmpty() || ssid.isEmpty()) runPortal();  // restarts when done
+  Serial.printf("Calendar: url=%s, saved Wi-Fi=%s\n", cfg.url.c_str(), ssid.c_str());
+  // Setup opens by itself only on first start. Later, hold the screen for 5 seconds.
+  if (cfg.url.isEmpty()) runPortal("first start: no calendar address saved yet");  // restarts when done
 
-  drawMessage("Calendar", {"Connecting to Wi-Fi", String(">") + ssid});
+  drawMessage("Calendar", {"Connecting to Wi-Fi", String(">") + (ssid.length() ? ssid : String("(saved network)"))});
   WiFi.begin();
   lastWifiTryMs = millis();
   for (int i = 0; i < 150 && WiFi.status() != WL_CONNECTED; i++) {  // up to 15 s, then carry on
