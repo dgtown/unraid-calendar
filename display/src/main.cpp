@@ -902,6 +902,40 @@ void keepWifiUp() {
 bool touchDown = false, longPressFired = false;
 uint32_t touchStartMs = 0, touchSeenMs = 0;
 int touchX = 0, touchY = 0, touchLastX = 0, touchLastY = 0;
+// Readings of the touch in progress. The first and last couple are taken while the finger is still
+// landing or lifting and can be far off, so taps and swipes are worked out from the ones in between.
+static int16_t tsX[64], tsY[64], tlX[4], tlY[4];
+int tsN = 0;
+
+void touchSample(int x, int y) {
+  if (tsN < 64) {
+    tsX[tsN] = x;
+    tsY[tsN] = y;
+  }
+  tlX[tsN % 4] = x;
+  tlY[tsN % 4] = y;
+  tsN++;
+}
+
+// Fills in where the touch started and ended (settled readings) and where a tap was (the median).
+void touchResult(int &sx, int &sy, int &ex, int &ey, int &tx, int &ty) {
+  int kept = min(tsN, 64);
+  int si = min(2, kept - 1);
+  sx = tsX[si];
+  sy = tsY[si];
+  int ei = tsN >= 4 ? (tsN - 3) % 4 : -1;
+  ex = ei >= 0 ? tlX[ei] : tsX[kept - 1];
+  ey = ei >= 0 ? tlY[ei] : tsY[kept - 1];
+  if (kept >= 6) {
+    std::sort(tsX + 2, tsX + kept - 2);
+    std::sort(tsY + 2, tsY + kept - 2);
+    tx = tsX[kept / 2];
+    ty = tsY[kept / 2];
+  } else {
+    tx = tsX[kept / 2];
+    ty = tsY[kept / 2];
+  }
+}
 
 // A touch counts only if the controller's pen-down line (IRQ) is actually low and the reading is
 // sane. Some boards read as "pressed" with garbage values after a cold power-up; this ignores that.
@@ -1132,12 +1166,11 @@ void handleTouch() {
       touchDown = true;
       longPressFired = false;
       touchStartMs = ms;
-      touchX = touchLastX = x;
-      touchY = touchLastY = y;
+      tsN = 0;
+      touchSample(x, y);
       return;
     }
-    touchLastX = x;
-    touchLastY = y;
+    touchSample(x, y);
     uint32_t held = ms - touchStartMs;
     if (!longPressFired && held > 5000) {
       longPressFired = true;
@@ -1153,9 +1186,11 @@ void handleTouch() {
       if (held <= 15000) runPortal("screen held for 5 seconds");  // restarts when done
       return;
     }
+    int tapX, tapY;
+    touchResult(touchX, touchY, touchLastX, touchLastY, tapX, tapY);
     int dx = touchLastX - touchX, dy = touchLastY - touchY;
     if (abs(dx) > 50 && abs(dx) > 2 * abs(dy)) onSwipe(dx < 0 ? 1 : -1);
-    else onTap(touchX, touchY);
+    else onTap(tapX, tapY);
   }
 }
 
