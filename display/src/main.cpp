@@ -70,8 +70,11 @@ struct Settings {
 // Touch calibration: raw touch readings at the left/right and top/bottom screen edges. Made by
 // tapping three targets on first start (touch panels differ between boards, some are mirrored).
 struct TouchCal {
-  bool ok = false, swap = false, flip = false;  // flip: the screen rotation it was made for
-  int32_t x0 = 200, x1 = 3700, y0 = 240, y1 = 3800;
+  bool ok = false, flip = false;  // flip: the screen rotation it was made for
+  // screen x = ax * rawX + bx * rawY + cx, and the same for y. Covers panels that are mirrored,
+  // turned, or read at a slant. The defaults fit the usual board.
+  float ax = 319.0f / 3500, bx = 0, cx = -200 * 319.0f / 3500;
+  float ay = 0, by = 239.0f / 3560, cy = -240 * 239.0f / 3560;
 } tcal;
 
 struct Event {
@@ -151,14 +154,16 @@ void loadSettings() {
   cfg.flip = prefs.getBool("flip", false);
   cfg.invert = prefs.getBool("invert", false);
   view = prefs.getUChar("view", VIEW_AGENDA) == VIEW_MONTH ? VIEW_MONTH : VIEW_AGENDA;
-  tcal.ok = prefs.getBool("tcOk", false);
-  tcal.swap = prefs.getBool("tcSwap", false);
-  tcal.flip = prefs.getBool("tcFlip", false);
-  tcal.x0 = prefs.getInt("tcX0", 200);
-  tcal.x1 = prefs.getInt("tcX1", 3700);
-  tcal.y0 = prefs.getInt("tcY0", 240);
-  tcal.y1 = prefs.getInt("tcY1", 3800);
-  if (tcal.x0 == tcal.x1 || tcal.y0 == tcal.y1) tcal = TouchCal();
+  tcal.ok = prefs.getBool("t2Ok", false);
+  if (tcal.ok) {
+    tcal.flip = prefs.getBool("t2Flip", false);
+    tcal.ax = prefs.getFloat("t2ax", tcal.ax);
+    tcal.bx = prefs.getFloat("t2bx", tcal.bx);
+    tcal.cx = prefs.getFloat("t2cx", tcal.cx);
+    tcal.ay = prefs.getFloat("t2ay", tcal.ay);
+    tcal.by = prefs.getFloat("t2by", tcal.by);
+    tcal.cy = prefs.getFloat("t2cy", tcal.cy);
+  }
   prefs.end();
 }
 
@@ -184,13 +189,14 @@ void saveSettings() {
 
 void saveTouchCal() {
   prefs.begin("cal", false);
-  prefs.putBool("tcOk", tcal.ok);
-  prefs.putBool("tcSwap", tcal.swap);
-  prefs.putBool("tcFlip", tcal.flip);
-  prefs.putInt("tcX0", tcal.x0);
-  prefs.putInt("tcX1", tcal.x1);
-  prefs.putInt("tcY0", tcal.y0);
-  prefs.putInt("tcY1", tcal.y1);
+  prefs.putBool("t2Ok", tcal.ok);
+  prefs.putBool("t2Flip", tcal.flip);
+  prefs.putFloat("t2ax", tcal.ax);
+  prefs.putFloat("t2bx", tcal.bx);
+  prefs.putFloat("t2cx", tcal.cx);
+  prefs.putFloat("t2ay", tcal.ay);
+  prefs.putFloat("t2by", tcal.by);
+  prefs.putFloat("t2cy", tcal.cy);
   prefs.end();
 }
 
@@ -948,10 +954,49 @@ bool readRaw(TS_Point &p) {
 bool readTouch(int &x, int &y) {
   TS_Point p;
   if (!readRaw(p)) return false;
-  int32_t rx = tcal.swap ? p.y : p.x, ry = tcal.swap ? p.x : p.y;
-  x = constrain(map(rx, tcal.x0, tcal.x1, 0, W - 1), 0, W - 1);
-  y = constrain(map(ry, tcal.y0, tcal.y1, 0, H - 1), 0, H - 1);
+  x = constrain((int)lroundf(tcal.ax * p.x + tcal.bx * p.y + tcal.cx), 0, W - 1);
+  y = constrain((int)lroundf(tcal.ay * p.x + tcal.by * p.y + tcal.cy), 0, H - 1);
   return true;
+}
+
+// Best-fit plane v = a*rx + b*ry + c through n points (least squares). False if the points don't
+// spread out in two directions.
+bool fitPlane(const TS_Point *r, const int *v, int n, float &a, float &b, float &c) {
+  double mx = 0, my = 0, mv = 0;
+  for (int i = 0; i < n; i++) {
+    mx += r[i].x;
+    my += r[i].y;
+    mv += v[i];
+  }
+  mx /= n;
+  my /= n;
+  mv /= n;
+  double sxx = 0, sxy = 0, syy = 0, sxv = 0, syv = 0;
+  for (int i = 0; i < n; i++) {
+    double dx = r[i].x - mx, dy = r[i].y - my, dv = v[i] - mv;
+    sxx += dx * dx;
+    sxy += dx * dy;
+    syy += dy * dy;
+    sxv += dx * dv;
+    syv += dy * dv;
+  }
+  double det = sxx * syy - sxy * sxy;
+  if (det < 1e9) return false;
+  a = (sxv * syy - syv * sxy) / det;
+  b = (syv * sxx - sxv * sxy) / det;
+  c = mv - a * mx - b * my;
+  return true;
+}
+
+// Works the calibration out from n taps; returns how far off (pixels) the worst tap still is.
+bool fitTouch(const TS_Point *r, const int *sx, const int *sy, int n, TouchCal &t, float &worst) {
+  if (!fitPlane(r, sx, n, t.ax, t.bx, t.cx) || !fitPlane(r, sy, n, t.ay, t.by, t.cy)) return false;
+  worst = 0;
+  for (int i = 0; i < n; i++) {
+    float ex = t.ax * r[i].x + t.bx * r[i].y + t.cx - sx[i], ey = t.ay * r[i].x + t.by * r[i].y + t.cy - sy[i];
+    worst = max(worst, max(fabsf(ex), fabsf(ey)));
+  }
+  return fabsf(t.ax * t.by - t.bx * t.ay) > 0.0008f;  // the panel has to cover a sensible area
 }
 
 // Waits for a press and returns its raw position once the finger lifts: the median of the readings,
@@ -1016,77 +1061,51 @@ void drawTarget(int x, int y, const String &line, const String &note) {
   calNote(note);
 }
 
-// Four corner taps work out which raw axis is which and its direction; a fifth tap in the middle
-// checks the result before it is saved. The raw numbers are shown so a photo tells what went wrong.
+// Four corner taps and one in the middle. The first four give the mapping (any mirroring, turn or
+// slant of the panel); the middle one has to land on its cross before anything is saved. The raw
+// numbers are shown so a photo tells what went wrong.
 void calibrateTouch() {
   static const int M = 30;
-  const int tx[4] = {M, W - 1 - M, W - 1 - M, M}, ty[4] = {M, M, H - 1 - M, H - 1 - M};
-  const TouchCal before = tcal;
+  const int tx[5] = {M, W - 1 - M, W - 1 - M, M, W / 2}, ty[5] = {M, M, H - 1 - M, H - 1 - M, H / 2 + 4};
   String note = "";
   for (int attempt = 0; attempt < 4; attempt++) {
-    TS_Point r[4];
-    for (int i = 0; i < 4;) {
-      drawTarget(tx[i], ty[i], "Tap the yellow cross (" + String(i + 1) + " of 4)", note);
+    TS_Point r[5];
+    String raw = "";
+    for (int i = 0; i < 5;) {
+      drawTarget(tx[i], ty[i], i < 4 ? "Tap the yellow cross (" + String(i + 1) + " of 5)"
+                                     : String("Last one: tap the cross in the middle"), note);
       int got = waitPress(r[i], 90000);
-      if (got == 0) {  // nobody there: carry on with what we had, ask again next start
-        tcal = before;
-        return;
-      }
+      if (got == 0) return;  // nobody there: carry on with what we had, ask again next start
       if (got < 0) {
         note = "Unsteady reading, try that one again";
         continue;
       }
-      note = "last: " + String(r[i].x) + ", " + String(r[i].y);
+      raw += String(i ? " " : "") + String(r[i].x) + "," + String(r[i].y);
+      note = raw;
       i++;
     }
-    String raw = String(r[0].x) + "," + String(r[0].y) + " " + String(r[1].x) + "," + String(r[1].y) + " " +
-                 String(r[2].x) + "," + String(r[2].y) + " " + String(r[3].x) + "," + String(r[3].y);
     Serial.println("Touch raw: " + raw);
-    bool swap = abs(r[1].y - r[0].y) > abs(r[1].x - r[0].x);
-    int32_t a[4], b[4];  // raw values along the screen's x and y
-    for (int i = 0; i < 4; i++) {
-      a[i] = swap ? r[i].y : r[i].x;
-      b[i] = swap ? r[i].x : r[i].y;
-    }
-    int32_t aL = (a[0] + a[3]) / 2, aR = (a[1] + a[2]) / 2, bT = (b[0] + b[1]) / 2, bB = (b[2] + b[3]) / 2;
-    int32_t spanA = abs(aR - aL), spanB = abs(bB - bT);
-    bool ok = spanA > 1200 && spanB > 900 && abs(a[0] - a[3]) < spanA / 4 && abs(a[1] - a[2]) < spanA / 4 &&
-              abs(b[0] - b[1]) < spanB / 4 && abs(b[2] - b[3]) < spanB / 4;
+    TouchCal t;
+    float worst = 0;
+    bool ok = fitTouch(r, tx, ty, 4, t, worst) && worst < 25;
+    float px = 0, py = 0;
     if (ok) {
-      float kx = float(aR - aL) / (tx[1] - tx[0]), ky = float(bB - bT) / (ty[3] - ty[0]);
-      tcal.swap = swap;
-      tcal.x0 = lroundf(aL - kx * tx[0]);
-      tcal.x1 = lroundf(aL + kx * (W - 1 - tx[0]));
-      tcal.y0 = lroundf(bT - ky * ty[0]);
-      tcal.y1 = lroundf(bT + ky * (H - 1 - ty[0]));
-      // Check: a tap on a cross in the middle has to land on it.
-      TS_Point c;
-      drawTarget(W / 2, H / 2 + 4, "Last one: tap the cross in the middle", raw);
-      int got = waitPress(c, 90000);
-      if (got == 0) {
-        tcal = before;
-        return;
-      }
-      int32_t ca = swap ? c.y : c.x, cb = swap ? c.x : c.y;
-      int px = map(ca, tcal.x0, tcal.x1, 0, W - 1), py = map(cb, tcal.y0, tcal.y1, 0, H - 1);
-      ok = got > 0 && abs(px - W / 2) <= 30 && abs(py - (H / 2 + 4)) <= 30;
-      raw += " c " + String(c.x) + "," + String(c.y);
-      if (ok) {
-        tcal.flip = cfg.flip;
-        tcal.ok = true;
-        saveTouchCal();
-        Serial.printf("Touch calibrated: swap=%d x %ld..%ld y %ld..%ld\n", swap, (long)tcal.x0, (long)tcal.x1,
-                      (long)tcal.y0, (long)tcal.y1);
-        drawMessage("Touch setup", {"Done. Taps now land where you touch.",
-                                    "To redo it, hold the screen 5 s, let go, and tick the box in setup."});
-        calNote(raw);
-        delay(2500);
-        return;
-      }
-      tft.fillCircle(constrain(px, 4, W - 5), constrain(py, 4, H - 5), 4, C_ERROR);  // where it thought you tapped
-      delay(1200);
+      px = t.ax * r[4].x + t.bx * r[4].y + t.cx;
+      py = t.ay * r[4].x + t.by * r[4].y + t.cy;
+      ok = fabsf(px - tx[4]) <= 30 && fabsf(py - ty[4]) <= 30;
     }
-    tcal = before;
+    if (ok && fitTouch(r, tx, ty, 5, t, worst)) {  // use all five for the final numbers
+      t.flip = cfg.flip;
+      t.ok = true;
+      tcal = t;
+      saveTouchCal();
+      Serial.printf("Touch calibrated: x = %.5f %.5f %.1f, y = %.5f %.5f %.1f\n", t.ax, t.bx, t.cx, t.ay, t.by, t.cy);
+      drawMessage("Touch setup", {"Done. Taps now land where you touch.",
+                                  "To redo it, hold the screen 5 s, let go, and tick the box in setup."});
+      calNote(raw);
+      delay(2500);
+      return;
+    }
     drawMessage("Touch setup", {"Those taps didn't line up with the crosses.",
                                 attempt < 3 ? "Let's try again." : "Carrying on without it for now."}, C_ERROR);
     calNote(raw, C_TEXT);
