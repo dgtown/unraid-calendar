@@ -168,19 +168,47 @@ bool isNight() {
 
 void updateBacklight() { setBacklight(isNight() && millis() > wakeUntilMs ? cfg.dimLevel : 100); }
 
-// Full-screen message, used for setup instructions and start-up.
+// Full-screen message, used for setup instructions and start-up. Lines wrap at word boundaries;
+// "1. ..." items get a hanging indent, and lines starting with ">" are highlighted and indented.
 void drawMessage(const String &title, const std::vector<String> &lines, uint16_t titleColor = C_ACCENT) {
   tft.fillScreen(C_BG);
   tft.setTextDatum(TL_DATUM);
   tft.setFreeFont(&FreeSansBold12pt7b);
   tft.setTextColor(titleColor);
-  tft.drawString(title, 12, 14);
+  tft.drawString(title, 12, 12);
   tft.setFreeFont(&FreeSans9pt7b);
-  tft.setTextColor(C_TEXT);
-  int y = 54;
-  for (const String &l : lines) {
-    tft.drawString(fit(l, W - 24), 12, y);
-    y += 24;
+  const int left = 12, lineH = 21;
+  int y = 48;
+  for (String text : lines) {
+    int indent = 0, wrapIndent = 0;
+    uint16_t color = C_TEXT;
+    if (text.startsWith(">")) {
+      text.remove(0, 1);
+      indent = wrapIndent = 18;
+      color = C_ACCENT;
+    } else if (text.length() > 2 && isdigit(text[0]) && text[1] == '.') {
+      wrapIndent = tft.textWidth(text.substring(0, 3));
+    }
+    tft.setTextColor(color);
+    if (!text.length()) {
+      y += lineH / 2;
+      continue;
+    }
+    while (text.length() && y < H) {
+      int maxW = W - left - indent - 8;
+      int cut = text.length();
+      if (tft.textWidth(text) > maxW) {  // break at the last space that fits
+        cut = -1;
+        for (int i = 0; i < (int)text.length(); i++)
+          if (text[i] == ' ' && tft.textWidth(text.substring(0, i)) <= maxW) cut = i;
+        if (cut <= 0) cut = text.length();  // one long word: let fit() shorten it
+      }
+      tft.drawString(fit(text.substring(0, cut), maxW), left + indent, y);
+      text = text.substring(cut);
+      text.trim();
+      indent = wrapIndent;
+      y += lineH;
+    }
   }
 }
 
@@ -513,12 +541,12 @@ bool settingsSaved = false;
 void showSetupScreen(WiFiManager *) {
   setBacklight(100);
   drawMessage("Setup", {
-    "1. On your phone, join the Wi-Fi",
-    String("    \"") + AP_NAME + "\"  password: " + AP_PASS,
-    "2. If no page opens, browse to 192.168.4.1",
-    "3. Tap Configure WiFi, pick your network,",
-    "    enter the calendar address and token, Save.",
-    "Address example: http://192.168.1.20:8080",
+    "1. On your phone, join this Wi-Fi:",
+    String(">") + AP_NAME,
+    String(">password: ") + AP_PASS,
+    "2. If no page opens, go to:",
+    ">http://192.168.4.1",
+    "3. Tap Configure WiFi, pick your network, enter the calendar address and token, then Save.",
   });
 }
 
