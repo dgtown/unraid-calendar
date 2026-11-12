@@ -7,6 +7,7 @@
 //   - month: swipe for the next/previous month, tap a day to see its events (top bar goes back)
 // Hold the screen for 5 seconds, then let go, to open the setup portal.
 
+#include <algorithm>
 #include <Arduino.h>
 #include <WiFi.h>
 #include <esp_wifi.h>
@@ -901,6 +902,40 @@ void keepWifiUp() {
 bool touchDown = false, longPressFired = false;
 uint32_t touchStartMs = 0, touchSeenMs = 0;
 int touchX = 0, touchY = 0, touchLastX = 0, touchLastY = 0;
+// Readings of the touch in progress. The first and last couple are taken while the finger is still
+// landing or lifting and can be far off, so taps and swipes are worked out from the ones in between.
+static int16_t tsX[64], tsY[64], tlX[4], tlY[4];
+int tsN = 0;
+
+void touchSample(int x, int y) {
+  if (tsN < 64) {
+    tsX[tsN] = x;
+    tsY[tsN] = y;
+  }
+  tlX[tsN % 4] = x;
+  tlY[tsN % 4] = y;
+  tsN++;
+}
+
+// Fills in where the touch started and ended (settled readings) and where a tap was (the median).
+void touchResult(int &sx, int &sy, int &ex, int &ey, int &tx, int &ty) {
+  int kept = min(tsN, 64);
+  int si = min(2, kept - 1);
+  sx = tsX[si];
+  sy = tsY[si];
+  int ei = tsN >= 4 ? (tsN - 3) % 4 : -1;
+  ex = ei >= 0 ? tlX[ei] : tsX[kept - 1];
+  ey = ei >= 0 ? tlY[ei] : tsY[kept - 1];
+  if (kept >= 6) {
+    std::sort(tsX + 2, tsX + kept - 2);
+    std::sort(tsY + 2, tsY + kept - 2);
+    tx = tsX[kept / 2];
+    ty = tsY[kept / 2];
+  } else {
+    tx = tsX[kept / 2];
+    ty = tsY[kept / 2];
+  }
+}
 
 // A touch counts only if the controller's pen-down line (IRQ) is actually low and the reading is
 // sane. Some boards read as "pressed" with garbage values after a cold power-up; this ignores that.
@@ -919,82 +954,144 @@ bool readTouch(int &x, int &y) {
   return true;
 }
 
-// Waits for a firm press, returns its averaged raw position once the finger lifts.
-bool waitPress(TS_Point &out, uint32_t timeoutMs) {
+// Waits for a press and returns its raw position once the finger lifts: the median of the readings,
+// without the first and last few (they are taken while the finger is still landing or leaving).
+// 1 = got one, 0 = nobody touched, -1 = the readings jumped around too much to trust.
+int waitPress(TS_Point &out, uint32_t timeoutMs) {
+  static int16_t xs[64], ys[64];
   uint32_t start = millis();
   while (millis() - start < timeoutMs) {
     TS_Point p;
-    long sx = 0, sy = 0;
-    int n = 0;
-    while (n < 16 && readRaw(p)) {  // the finger has to stay down for all the samples
-      sx += p.x;
-      sy += p.y;
-      n++;
+    if (!readRaw(p)) {
       delay(10);
-    }
-    if (n < 16) {
-      delay(20);
       continue;
     }
-    out.x = sx / n;
-    out.y = sy / n;
-    uint32_t up = millis();
-    while (millis() - up < 300) {  // wait until it has been lifted for 0.3 s
-      if (readRaw(p)) up = millis();
-      delay(10);
+    int n = 0;
+    uint32_t seen = millis();
+    while (millis() - seen < 120) {  // until it has been lifted for a moment
+      if (readRaw(p)) {
+        seen = millis();
+        if (n < 64) {
+          xs[n] = p.x;
+          ys[n] = p.y;
+          n++;
+        }
+      }
+      delay(8);
     }
-    return true;
+    if (n < 8) continue;  // too short to be a deliberate tap
+    int from = 3, cnt = n - 6;
+    std::sort(xs + from, xs + from + cnt);
+    std::sort(ys + from, ys + from + cnt);
+    out.x = xs[from + cnt / 2];
+    out.y = ys[from + cnt / 2];
+    int spread = max(xs[from + cnt * 3 / 4] - xs[from + cnt / 4], ys[from + cnt * 3 / 4] - ys[from + cnt / 4]);
+    delay(250);
+    return spread > 250 ? -1 : 1;
   }
-  return false;
+  return 0;
 }
 
-void drawTarget(int x, int y, int step) {
+void calNote(const String &s, uint16_t color = C_DIM) {  // small line at the bottom, handy in a photo
+  tft.fillRect(0, H - 18, W, 18, C_BG);
+  tft.setTextFont(2);
+  tft.setTextDatum(BC_DATUM);
+  tft.setTextColor(color);
+  tft.drawString(s, W / 2, H - 2);
+}
+
+void drawTarget(int x, int y, const String &line, const String &note) {
   tft.fillScreen(C_BG);
   tft.setTextFont(4);
   tft.setTextDatum(MC_DATUM);
   tft.setTextColor(C_ACCENT);
-  tft.drawString("Touch setup", W / 2, H / 2 - 22);
+  tft.drawString("Touch setup", W / 2, H / 2 - 50);
   tft.setTextFont(2);
   tft.setTextColor(C_TEXT);
-  tft.drawString("Tap the centre of the yellow cross (" + String(step) + " of 3)", W / 2, H / 2 + 10);
-  tft.drawFastHLine(x - 12, y, 25, C_ACCENT);
-  tft.drawFastVLine(x, y - 12, 25, C_ACCENT);
-  tft.drawCircle(x, y, 6, C_ACCENT);
+  tft.drawString(line, W / 2, H / 2 - 22);
+  tft.drawString("Press firmly for a second, then let go.", W / 2, H / 2 + 34);
+  tft.drawFastHLine(x - 14, y, 29, C_ACCENT);
+  tft.drawFastVLine(x, y - 14, 29, C_ACCENT);
+  tft.drawCircle(x, y, 7, C_ACCENT);
+  calNote(note);
 }
 
-// Three taps: top left, top right, bottom left. Works out which raw axis is which and its direction.
+// Four corner taps work out which raw axis is which and its direction; a fifth tap in the middle
+// checks the result before it is saved. The raw numbers are shown so a photo tells what went wrong.
 void calibrateTouch() {
-  static const int M = 24;
-  const int tx[3] = {M, W - 1 - M, M}, ty[3] = {M, M, H - 1 - M};
-  for (int attempt = 0; attempt < 3; attempt++) {
-    TS_Point r[3];
-    for (int i = 0; i < 3; i++) {
-      drawTarget(tx[i], ty[i], i + 1);
-      if (!waitPress(r[i], 60000)) return;  // nobody there: keep the default numbers, ask again next start
+  static const int M = 30;
+  const int tx[4] = {M, W - 1 - M, W - 1 - M, M}, ty[4] = {M, M, H - 1 - M, H - 1 - M};
+  const TouchCal before = tcal;
+  String note = "";
+  for (int attempt = 0; attempt < 4; attempt++) {
+    TS_Point r[4];
+    for (int i = 0; i < 4;) {
+      drawTarget(tx[i], ty[i], "Tap the yellow cross (" + String(i + 1) + " of 4)", note);
+      int got = waitPress(r[i], 90000);
+      if (got == 0) {  // nobody there: carry on with what we had, ask again next start
+        tcal = before;
+        return;
+      }
+      if (got < 0) {
+        note = "Unsteady reading, try that one again";
+        continue;
+      }
+      note = "last: " + String(r[i].x) + ", " + String(r[i].y);
+      i++;
     }
+    String raw = String(r[0].x) + "," + String(r[0].y) + " " + String(r[1].x) + "," + String(r[1].y) + " " +
+                 String(r[2].x) + "," + String(r[2].y) + " " + String(r[3].x) + "," + String(r[3].y);
+    Serial.println("Touch raw: " + raw);
     bool swap = abs(r[1].y - r[0].y) > abs(r[1].x - r[0].x);
-    int32_t a0 = swap ? r[0].y : r[0].x, a1 = swap ? r[1].y : r[1].x;  // along the screen's x
-    int32_t b0 = swap ? r[0].x : r[0].y, b2 = swap ? r[2].x : r[2].y;  // along the screen's y
-    if (abs(a1 - a0) < 800 || abs(b2 - b0) < 600) {
-      drawMessage("Touch setup", {"Those taps were too close together.", "Let's try again."}, C_ERROR);
-      delay(1500);
-      continue;
+    int32_t a[4], b[4];  // raw values along the screen's x and y
+    for (int i = 0; i < 4; i++) {
+      a[i] = swap ? r[i].y : r[i].x;
+      b[i] = swap ? r[i].x : r[i].y;
     }
-    float kx = float(a1 - a0) / (tx[1] - tx[0]), ky = float(b2 - b0) / (ty[2] - ty[0]);
-    tcal.swap = swap;
-    tcal.x0 = lroundf(a0 - kx * tx[0]);
-    tcal.x1 = lroundf(a0 + kx * (W - 1 - tx[0]));
-    tcal.y0 = lroundf(b0 - ky * ty[0]);
-    tcal.y1 = lroundf(b0 + ky * (H - 1 - ty[0]));
-    tcal.flip = cfg.flip;
-    tcal.ok = true;
-    saveTouchCal();
-    Serial.printf("Touch calibrated: swap=%d x %ld..%ld y %ld..%ld\n", swap, (long)tcal.x0, (long)tcal.x1,
-                  (long)tcal.y0, (long)tcal.y1);
-    drawMessage("Touch setup", {"Done. Taps should now land where you touch.",
-                                "To redo it, hold the screen 5 s, let go, and tick the box in setup."});
-    delay(2500);
-    return;
+    int32_t aL = (a[0] + a[3]) / 2, aR = (a[1] + a[2]) / 2, bT = (b[0] + b[1]) / 2, bB = (b[2] + b[3]) / 2;
+    int32_t spanA = abs(aR - aL), spanB = abs(bB - bT);
+    bool ok = spanA > 1200 && spanB > 900 && abs(a[0] - a[3]) < spanA / 4 && abs(a[1] - a[2]) < spanA / 4 &&
+              abs(b[0] - b[1]) < spanB / 4 && abs(b[2] - b[3]) < spanB / 4;
+    if (ok) {
+      float kx = float(aR - aL) / (tx[1] - tx[0]), ky = float(bB - bT) / (ty[3] - ty[0]);
+      tcal.swap = swap;
+      tcal.x0 = lroundf(aL - kx * tx[0]);
+      tcal.x1 = lroundf(aL + kx * (W - 1 - tx[0]));
+      tcal.y0 = lroundf(bT - ky * ty[0]);
+      tcal.y1 = lroundf(bT + ky * (H - 1 - ty[0]));
+      // Check: a tap on a cross in the middle has to land on it.
+      TS_Point c;
+      drawTarget(W / 2, H / 2 + 4, "Last one: tap the cross in the middle", raw);
+      int got = waitPress(c, 90000);
+      if (got == 0) {
+        tcal = before;
+        return;
+      }
+      int32_t ca = swap ? c.y : c.x, cb = swap ? c.x : c.y;
+      int px = map(ca, tcal.x0, tcal.x1, 0, W - 1), py = map(cb, tcal.y0, tcal.y1, 0, H - 1);
+      ok = got > 0 && abs(px - W / 2) <= 30 && abs(py - (H / 2 + 4)) <= 30;
+      raw += " c " + String(c.x) + "," + String(c.y);
+      if (ok) {
+        tcal.flip = cfg.flip;
+        tcal.ok = true;
+        saveTouchCal();
+        Serial.printf("Touch calibrated: swap=%d x %ld..%ld y %ld..%ld\n", swap, (long)tcal.x0, (long)tcal.x1,
+                      (long)tcal.y0, (long)tcal.y1);
+        drawMessage("Touch setup", {"Done. Taps now land where you touch.",
+                                    "To redo it, hold the screen 5 s, let go, and tick the box in setup."});
+        calNote(raw);
+        delay(2500);
+        return;
+      }
+      tft.fillCircle(constrain(px, 4, W - 5), constrain(py, 4, H - 5), 4, C_ERROR);  // where it thought you tapped
+      delay(1200);
+    }
+    tcal = before;
+    drawMessage("Touch setup", {"Those taps didn't line up with the crosses.",
+                                attempt < 3 ? "Let's try again." : "Carrying on without it for now."}, C_ERROR);
+    calNote(raw, C_TEXT);
+    delay(attempt < 3 ? 6000 : 15000);  // long enough to read (or photograph) the numbers
+    note = "";
   }
 }
 
@@ -1069,12 +1166,11 @@ void handleTouch() {
       touchDown = true;
       longPressFired = false;
       touchStartMs = ms;
-      touchX = touchLastX = x;
-      touchY = touchLastY = y;
+      tsN = 0;
+      touchSample(x, y);
       return;
     }
-    touchLastX = x;
-    touchLastY = y;
+    touchSample(x, y);
     uint32_t held = ms - touchStartMs;
     if (!longPressFired && held > 5000) {
       longPressFired = true;
@@ -1090,9 +1186,11 @@ void handleTouch() {
       if (held <= 15000) runPortal("screen held for 5 seconds");  // restarts when done
       return;
     }
+    int tapX, tapY;
+    touchResult(touchX, touchY, touchLastX, touchLastY, tapX, tapY);
     int dx = touchLastX - touchX, dy = touchLastY - touchY;
     if (abs(dx) > 50 && abs(dx) > 2 * abs(dy)) onSwipe(dx < 0 ? 1 : -1);
-    else onTap(touchX, touchY);
+    else onTap(tapX, tapY);
   }
 }
 
