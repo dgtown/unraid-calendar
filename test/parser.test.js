@@ -124,3 +124,64 @@ test('"am" and "and" are not read as lengths', () => {
   assert.equal(ev('Lunch and shopping sat 1pm'), 'Lunch and shopping 2026-11-14 13:00 2026-11-14 14:00');
   assert.equal(ev('Golf sat 10am 4h'), 'Golf 2026-11-14 10:00 2026-11-14 14:00');
 });
+
+// Everyday phrasings from the stress test. Wed Nov 11 2026, 8:46pm local.
+const ref2 = new Date(2026, 10, 11, 20, 46);
+const everyday = [
+  ['Dentist tomorrow 3', 'Dentist', '2026-11-12 15:00', '2026-11-12 16:00', false],
+  ['Dinner tonight 7', 'Dinner', '2026-11-11 19:00', '2026-11-11 20:00', false],
+  ['Tomorrow dentist 3pm', 'Dentist', '2026-11-12 15:00', '2026-11-12 16:00', false],
+  ['Friday: lunch with Bob 12:30', 'Lunch with Bob', '2026-11-13 12:30', '2026-11-13 13:30', false],
+  ['Doctor appointment on the 15th at 2pm', 'Doctor appointment', '2026-11-15 14:00', '2026-11-15 15:00', false],
+  ['Mtg tmw 9', 'Mtg', '2026-11-12 9:00', '2026-11-12 10:00', false],
+  ['dr appt wed 11a', 'Dr appt', '2026-11-18 11:00', '2026-11-18 12:00', false],
+  ['Kids dentist Thursday 345', 'Kids dentist', '2026-11-12 15:45', '2026-11-12 16:45', false],
+  ['gym 0600 tomorrow', 'Gym', '2026-11-12 6:00', '2026-11-12 7:00', false],
+  ['Game night next saturday 7pm', 'Game night', '2026-11-21 19:00', '2026-11-21 20:00', false],
+  ['Dinner at Olive Garden friday 6pm', 'Dinner', '2026-11-13 18:00', '2026-11-13 19:00', false, 'Olive Garden'],
+  ['Party sat 3pm at 123 Main St', 'Party', '2026-11-14 15:00', '2026-11-14 16:00', false, '123 Main St'],
+  ['Soccer sat @ 10', 'Soccer', '2026-11-14 10:00', '2026-11-14 11:00', false],
+  ['Christmas dinner 5pm', 'Christmas dinner', '2026-12-25 17:00', '2026-12-25 18:00', false],
+  ['New years eve party', 'New years eve party', '2026-12-31 0:00', '2027-1-1 0:00', true],
+  ['Camping this weekend', 'Camping', '2026-11-14 0:00', '2026-11-16 0:00', true],
+  ['I have a dentist appointment tuesday at 3pm', 'Dentist appointment', '2026-11-17 15:00', '2026-11-17 16:00', false],
+  ['Meeting with 3M tomorrow 2pm', 'Meeting with 3M', '2026-11-12 14:00', '2026-11-12 15:00', false],
+  ['100 day celebration feb 12', '100 day celebration', '2027-2-12 0:00', '2027-2-13 0:00', true],
+  ['Kids 1st day of school Aug 25', 'Kids 1st day of school', '2027-8-25 0:00', '2027-8-26 0:00', true],
+  ['Morning walk tomorrow 7', 'Morning walk', '2026-11-12 7:00', '2026-11-12 8:00', false],
+  ['DENTIST TUESDAY 3PM', 'Dentist', '2026-11-17 15:00', '2026-11-17 16:00', false],
+  ['Meeting thursday between 2 and 4', 'Meeting', '2026-11-12 14:00', '2026-11-12 16:00', false],
+  ['Haircut 11-20', 'Haircut', '2026-11-20 0:00', '2026-11-21 0:00', true],
+  ['Standup every weekday 9', 'Standup', '2026-11-12 9:00', '2026-11-12 10:00', false],
+  ['Take out trash every thursday night', 'Take out trash', '2026-11-12 0:00', '2026-11-13 0:00', true],
+];
+
+for (const [text, title, start, end, allDay, location] of everyday) {
+  test(`everyday: ${text}`, () => {
+    const r = parseMessage(text, ref2);
+    assert.equal(r.type, 'event');
+    assert.equal(r.title, title);
+    assert.equal(local(r.start), start);
+    assert.equal(local(r.end), end);
+    assert.equal(r.allDay, allDay);
+    if (location) assert.equal(r.location, location);
+  });
+}
+
+test('a time with no day means today if it is still ahead, otherwise tomorrow', () => {
+  assert.equal(local(parseMessage('Dinner at 6', new Date(2026, 2, 2, 7, 0)).start), '2026-3-2 18:00');
+  assert.equal(local(parseMessage('Dinner at 6', ref2).start), '2026-11-12 18:00');
+});
+
+test('a bare number with no day is not guessed at', () => {
+  const r = parseMessage('Yoga 6', ref2);
+  assert.notEqual(r.type, 'event');
+});
+
+test('Thanksgiving follows the time zone', () => {
+  const old = process.env.TZ;
+  assert.equal(local(parseMessage('Thanksgiving dinner 4pm', ref2).start), '2027-10-11 16:00'); // Canada: 2nd Monday of October
+  process.env.TZ = 'America/New_York';
+  assert.equal(local(parseMessage('Thanksgiving dinner 4pm', ref2).start), '2026-11-26 16:00');
+  process.env.TZ = old;
+});
