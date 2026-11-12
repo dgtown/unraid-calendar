@@ -63,6 +63,7 @@ and keeps trying every 30 seconds.
 - **Colours look like a negative**: open setup and tick *Invert colours*.
 - **Upside down**: tick *Turn the picture upside down*.
 - **White or garbled screen**: you probably have the other board version; flash the other `.bin`.
-- **Taps land in the wrong place**: on first start the display asks you to tap three crosses so it
-  learns how its touch panel is wired. To do it again, hold the screen 5 s, let go, tick
+- **Taps land in the wrong place**: on first start the display asks you to tap five crosses so it
+  learns how its touch panel is wired (press each firmly for a second). The small numbers at the
+  bottom are the raw readings, useful when reporting a problem. To do it again, hold the screen 5 s, let go, tick
   "Redo touch calibration" in setup and Save.
