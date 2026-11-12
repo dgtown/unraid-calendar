@@ -63,5 +63,6 @@ and keeps trying every 30 seconds.
 - **Colours look like a negative**: open setup and tick *Invert colours*.
 - **Upside down**: tick *Turn the picture upside down*.
 - **White or garbled screen**: you probably have the other board version; flash the other `.bin`.
-- **Taps land in the wrong place**: the touch panel is read in halves, so this only matters if it's
-  far off; the calibration numbers are in `readTouch()` in `src/main.cpp`.
+- **Taps land in the wrong place**: on first start the display asks you to tap three crosses so it
+  learns how its touch panel is wired. To do it again, hold the screen 5 s, let go, tick
+  "Redo touch calibration" in setup and Save.

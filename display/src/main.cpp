@@ -66,6 +66,13 @@ struct Settings {
   bool flip = false, invert = false;
 } cfg;
 
+// Touch calibration: raw touch readings at the left/right and top/bottom screen edges. Made by
+// tapping three targets on first start (touch panels differ between boards, some are mirrored).
+struct TouchCal {
+  bool ok = false, swap = false, flip = false;  // flip: the screen rotation it was made for
+  int32_t x0 = 200, x1 = 3700, y0 = 240, y1 = 3800;
+} tcal;
+
 struct Event {
   String title, where, time, end;
   bool allDay = false;
@@ -143,6 +150,14 @@ void loadSettings() {
   cfg.flip = prefs.getBool("flip", false);
   cfg.invert = prefs.getBool("invert", false);
   view = prefs.getUChar("view", VIEW_AGENDA) == VIEW_MONTH ? VIEW_MONTH : VIEW_AGENDA;
+  tcal.ok = prefs.getBool("tcOk", false);
+  tcal.swap = prefs.getBool("tcSwap", false);
+  tcal.flip = prefs.getBool("tcFlip", false);
+  tcal.x0 = prefs.getInt("tcX0", 200);
+  tcal.x1 = prefs.getInt("tcX1", 3700);
+  tcal.y0 = prefs.getInt("tcY0", 240);
+  tcal.y1 = prefs.getInt("tcY1", 3800);
+  if (tcal.x0 == tcal.x1 || tcal.y0 == tcal.y1) tcal = TouchCal();
   prefs.end();
 }
 
@@ -163,6 +178,18 @@ void saveSettings() {
   prefs.putInt("dimLevel", cfg.dimLevel);
   prefs.putBool("flip", cfg.flip);
   prefs.putBool("invert", cfg.invert);
+  prefs.end();
+}
+
+void saveTouchCal() {
+  prefs.begin("cal", false);
+  prefs.putBool("tcOk", tcal.ok);
+  prefs.putBool("tcSwap", tcal.swap);
+  prefs.putBool("tcFlip", tcal.flip);
+  prefs.putInt("tcX0", tcal.x0);
+  prefs.putInt("tcX1", tcal.x1);
+  prefs.putInt("tcY0", tcal.y0);
+  prefs.putInt("tcY1", tcal.y1);
   prefs.end();
 }
 
@@ -813,8 +840,10 @@ void runPortal(const char *why) {
                              cfg.flip ? "type=\"checkbox\" checked" : "type=\"checkbox\"", WFM_LABEL_AFTER);
   WiFiManagerParameter pInvert("invert", "Invert colours (if they look like a photo negative)", "1", 2,
                                cfg.invert ? "type=\"checkbox\" checked" : "type=\"checkbox\"", WFM_LABEL_AFTER);
+  WiFiManagerParameter pRecal("recal", "Redo touch calibration (if taps land in the wrong place)", "1", 2,
+                              "type=\"checkbox\"", WFM_LABEL_AFTER);
   for (WiFiManagerParameter *p : {&hdr, &pUrl, &pToken, &pDays, &pRefresh, &hdr2, &pDimFrom, &pDimTo, &pDimLevel,
-                                  &pFlip, &pInvert})
+                                  &pFlip, &pInvert, &pRecal})
     wm.addParameter(p);
 
   settingsSaved = false;
@@ -840,6 +869,10 @@ void runPortal(const char *why) {
     cfg.flip = strcmp(pFlip.getValue(), "1") == 0;
     cfg.invert = strcmp(pInvert.getValue(), "1") == 0;
     saveSettings();
+    if (strcmp(pRecal.getValue(), "1") == 0) {
+      tcal.ok = false;
+      saveTouchCal();
+    }
   }
   drawMessage(settingsSaved ? "Saved" : "Restarting", {"Starting the calendar..."});
   delay(1200);
@@ -871,13 +904,98 @@ int touchX = 0, touchY = 0, touchLastX = 0, touchLastY = 0;
 
 // A touch counts only if the controller's pen-down line (IRQ) is actually low and the reading is
 // sane. Some boards read as "pressed" with garbage values after a cold power-up; this ignores that.
-bool readTouch(int &x, int &y) {
+bool readRaw(TS_Point &p) {
   if (digitalRead(TOUCH_IRQ) != LOW) return false;
-  TS_Point p = ts.getPoint();
-  if (p.z < 400 || p.x < 100 || p.x > 4000 || p.y < 100 || p.y > 4000) return false;
-  x = constrain(map(p.x, 200, 3700, 0, W - 1), 0, W - 1);
-  y = constrain(map(p.y, 240, 3800, 0, H - 1), 0, H - 1);
+  p = ts.getPoint();
+  return !(p.z < 400 || p.x < 100 || p.x > 4000 || p.y < 100 || p.y > 4000);
+}
+
+bool readTouch(int &x, int &y) {
+  TS_Point p;
+  if (!readRaw(p)) return false;
+  int32_t rx = tcal.swap ? p.y : p.x, ry = tcal.swap ? p.x : p.y;
+  x = constrain(map(rx, tcal.x0, tcal.x1, 0, W - 1), 0, W - 1);
+  y = constrain(map(ry, tcal.y0, tcal.y1, 0, H - 1), 0, H - 1);
   return true;
+}
+
+// Waits for a firm press, returns its averaged raw position once the finger lifts.
+bool waitPress(TS_Point &out, uint32_t timeoutMs) {
+  uint32_t start = millis();
+  while (millis() - start < timeoutMs) {
+    TS_Point p;
+    long sx = 0, sy = 0;
+    int n = 0;
+    while (n < 16 && readRaw(p)) {  // the finger has to stay down for all the samples
+      sx += p.x;
+      sy += p.y;
+      n++;
+      delay(10);
+    }
+    if (n < 16) {
+      delay(20);
+      continue;
+    }
+    out.x = sx / n;
+    out.y = sy / n;
+    uint32_t up = millis();
+    while (millis() - up < 300) {  // wait until it has been lifted for 0.3 s
+      if (readRaw(p)) up = millis();
+      delay(10);
+    }
+    return true;
+  }
+  return false;
+}
+
+void drawTarget(int x, int y, int step) {
+  tft.fillScreen(C_BG);
+  tft.setTextFont(4);
+  tft.setTextDatum(MC_DATUM);
+  tft.setTextColor(C_ACCENT);
+  tft.drawString("Touch setup", W / 2, H / 2 - 22);
+  tft.setTextFont(2);
+  tft.setTextColor(C_TEXT);
+  tft.drawString("Tap the centre of the yellow cross (" + String(step) + " of 3)", W / 2, H / 2 + 10);
+  tft.drawFastHLine(x - 12, y, 25, C_ACCENT);
+  tft.drawFastVLine(x, y - 12, 25, C_ACCENT);
+  tft.drawCircle(x, y, 6, C_ACCENT);
+}
+
+// Three taps: top left, top right, bottom left. Works out which raw axis is which and its direction.
+void calibrateTouch() {
+  static const int M = 24;
+  const int tx[3] = {M, W - 1 - M, M}, ty[3] = {M, M, H - 1 - M};
+  for (int attempt = 0; attempt < 3; attempt++) {
+    TS_Point r[3];
+    for (int i = 0; i < 3; i++) {
+      drawTarget(tx[i], ty[i], i + 1);
+      if (!waitPress(r[i], 60000)) return;  // nobody there: keep the default numbers, ask again next start
+    }
+    bool swap = abs(r[1].y - r[0].y) > abs(r[1].x - r[0].x);
+    int32_t a0 = swap ? r[0].y : r[0].x, a1 = swap ? r[1].y : r[1].x;  // along the screen's x
+    int32_t b0 = swap ? r[0].x : r[0].y, b2 = swap ? r[2].x : r[2].y;  // along the screen's y
+    if (abs(a1 - a0) < 800 || abs(b2 - b0) < 600) {
+      drawMessage("Touch setup", {"Those taps were too close together.", "Let's try again."}, C_ERROR);
+      delay(1500);
+      continue;
+    }
+    float kx = float(a1 - a0) / (tx[1] - tx[0]), ky = float(b2 - b0) / (ty[2] - ty[0]);
+    tcal.swap = swap;
+    tcal.x0 = lroundf(a0 - kx * tx[0]);
+    tcal.x1 = lroundf(a0 + kx * (W - 1 - tx[0]));
+    tcal.y0 = lroundf(b0 - ky * ty[0]);
+    tcal.y1 = lroundf(b0 + ky * (H - 1 - ty[0]));
+    tcal.flip = cfg.flip;
+    tcal.ok = true;
+    saveTouchCal();
+    Serial.printf("Touch calibrated: swap=%d x %ld..%ld y %ld..%ld\n", swap, (long)tcal.x0, (long)tcal.x1,
+                  (long)tcal.y0, (long)tcal.y1);
+    drawMessage("Touch setup", {"Done. Taps should now land where you touch.",
+                                "To redo it, hold the screen 5 s, let go, and tick the box in setup."});
+    delay(2500);
+    return;
+  }
 }
 
 void switchView(View v) {
@@ -1001,6 +1119,10 @@ void setup() {
   touchSpi.begin(TOUCH_CLK, TOUCH_MISO, TOUCH_MOSI, TOUCH_CS);
   ts.begin(touchSpi);
   ts.setRotation(cfg.flip ? 3 : 1);
+  if (!tcal.ok || tcal.flip != cfg.flip) {
+    delay(300);  // let the touch controller settle after power-up
+    calibrateTouch();
+  }
 
   WiFi.mode(WIFI_STA);
   WiFi.setAutoReconnect(true);
