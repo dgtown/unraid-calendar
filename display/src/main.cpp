@@ -9,6 +9,7 @@
 
 #include <Arduino.h>
 #include <WiFi.h>
+#include <esp_wifi.h>
 #include <WiFiManager.h>
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
@@ -614,7 +615,7 @@ uint32_t fnv(const String &s) {
 // GETs a path from the calendar app and parses the JSON. Shows what went wrong in the footer.
 bool getJson(const String &path, JsonDocument &doc, String *body = nullptr) {
   if (WiFi.status() != WL_CONNECTED) {
-    setStatus("No Wi-Fi, retrying...", true);
+    setStatus("No Wi-Fi, retrying (hold screen 5 s for setup)", true);
     return false;
   }
   String url = baseUrl() + path + (path.indexOf('?') >= 0 ? "&" : "?") + "token=" + urlEncode(cfg.token);
@@ -786,9 +787,9 @@ void showSetupScreen(WiFiManager *) {
   });
 }
 
-// onDemand: opened from the screen (always show the portal); otherwise connect with saved Wi-Fi
-// and only fall back to the portal if that fails or the calendar isn't configured yet.
-void runPortal(bool onDemand) {
+// Shows the setup portal, saves what was entered and restarts. Only opened on first start (nothing
+// saved yet) or when someone holds the screen: a Wi-Fi that's slow to come back never opens it.
+void runPortal() {
   WiFiManager wm;
   String days = String(cfg.days), refresh = String(cfg.refreshMin);
   String dimFrom = String(cfg.dimFrom), dimTo = String(cfg.dimTo), dimLevel = String(cfg.dimLevel);
@@ -817,10 +818,8 @@ void runPortal(bool onDemand) {
   wm.setBreakAfterConfig(true);  // keep the settings even if the Wi-Fi password was wrong
   wm.setAPCallback(showSetupScreen);
   wm.setConnectTimeout(20);
-  wm.setConfigPortalTimeout(onDemand ? 600 : 300);
-
-  bool connected = (onDemand || cfg.url.isEmpty()) ? wm.startConfigPortal(AP_NAME, AP_PASS)
-                                                   : wm.autoConnect(AP_NAME, AP_PASS);
+  wm.setConfigPortalTimeout(600);
+  wm.startConfigPortal(AP_NAME, AP_PASS);
   if (settingsSaved) {
     cfg.url = pUrl.getValue();
     cfg.url.trim();
@@ -835,11 +834,25 @@ void runPortal(bool onDemand) {
     cfg.invert = strcmp(pInvert.getValue(), "1") == 0;
     saveSettings();
   }
-  if (onDemand || settingsSaved || !connected || cfg.url.isEmpty()) {
-    drawMessage(settingsSaved ? "Saved" : "Restarting", {"Starting the calendar..."});
-    delay(1200);
-    ESP.restart();
-  }
+  drawMessage(settingsSaved ? "Saved" : "Restarting", {"Starting the calendar..."});
+  delay(1200);
+  ESP.restart();
+}
+
+// Saved Wi-Fi network name, or "" if none.
+String savedSsid() {
+  wifi_config_t conf;
+  if (esp_wifi_get_config(WIFI_IF_STA, &conf) != ESP_OK) return "";
+  return String(reinterpret_cast<const char *>(conf.sta.ssid));
+}
+
+// Keep trying the saved network in the background (routers can take minutes after a power cut).
+uint32_t lastWifiTryMs = 0;
+void keepWifiUp() {
+  if (WiFi.status() == WL_CONNECTED || millis() - lastWifiTryMs < 30000) return;
+  lastWifiTryMs = millis();
+  WiFi.disconnect();
+  WiFi.begin();
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -933,7 +946,7 @@ void handleTouch() {
       touchY = touchLastY = y;
     } else if (!longPressFired && ms - touchStartMs > 5000) {
       longPressFired = true;
-      runPortal(true);  // restarts when done
+      runPortal();  // restarts when done
     }
   } else if (touchDown && ms - touchSeenMs > 80) {  // released (with a little debounce)
     touchDown = false;
@@ -969,16 +982,29 @@ void setup() {
   ts.begin(touchSpi);
   ts.setRotation(cfg.flip ? 3 : 1);
 
-  drawMessage("Calendar", {"Connecting to Wi-Fi...", "", "Hold the screen to open setup."});
-  bool setupRequested = false;
-  for (int i = 0; i < 20 && !setupRequested; i++) {  // 2 seconds to touch and hold
+  drawMessage("Calendar", {"Starting...", "", "Hold the screen to open setup."});
+  // Setup only if the screen is held for the whole 2 seconds; a stray reading at power-up
+  // (the touch chip can report one) must not throw the display into setup.
+  delay(300);
+  int held = 0;
+  for (int i = 0; i < 20; i++) {
     int x, y;
-    setupRequested = readTouch(x, y);
+    if (readTouch(x, y)) held++;
     delay(100);
   }
+  bool setupRequested = held >= 18;
+
   WiFi.mode(WIFI_STA);
   WiFi.setAutoReconnect(true);
-  runPortal(setupRequested);  // connects; shows the portal only when needed
+  String ssid = savedSsid();
+  if (setupRequested || cfg.url.isEmpty() || ssid.isEmpty()) runPortal();  // restarts when done
+
+  drawMessage("Calendar", {"Connecting to Wi-Fi", String(">") + ssid});
+  WiFi.begin();
+  lastWifiTryMs = millis();
+  for (int i = 0; i < 150 && WiFi.status() != WL_CONNECTED; i++) {  // up to 15 s, then carry on
+    delay(100);
+  }
 
   tft.fillScreen(C_BG);
   drawAll();
@@ -989,6 +1015,7 @@ void setup() {
 
 void loop() {
   handleTouch();
+  keepWifiUp();
   uint32_t ms = millis();
 
   if (ms - lastFetchMs >= nextFetchInMs) {

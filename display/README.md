@@ -46,7 +46,9 @@ On first start the screen shows setup instructions:
    - **FEED_TOKEN**
 4. Tap **Save**. The display restarts and shows your calendar.
 
-To change settings later, hold your finger on the screen for 5 seconds (or while it starts up).
+To change settings later, hold your finger on the screen for 5 seconds (or for the first 2 seconds after
+it powers on). Once it's set up it never opens setup by itself: if your Wi-Fi isn't back yet after a
+power cut, it shows "No Wi-Fi, retrying" and keeps trying every 30 seconds.
 
 ## Troubleshooting
 
