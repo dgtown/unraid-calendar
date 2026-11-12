@@ -336,8 +336,70 @@ void drawDayRow(int d, int y, bool continued) {
   tft.drawFastHLine(TIME_X, y + DAY_H - 2, W - 2 * TIME_X, C_LINE);
 }
 
+// Text too long for its row scrolls sideways like a ticker: it waits, then slides left and wraps around.
+// Each line is drawn into a small off-screen sprite and copied over, so there is no flicker.
+static const int MARQUEE_W = W - TITLE_X - 6;
+static const int MARQUEE_GAP = 40;          // pixels between the end of the text and its repeat
+static const int MARQUEE_PAUSE_MS = 2500;   // still time before each pass
+static const int MARQUEE_SPEED = 40;        // pixels per second
+struct Marquee {
+  String text;
+  int y, h, textW;  // top of the strip, its height, full text width
+  bool small;       // font 2 (second line) instead of FreeSans 9pt (title)
+  uint16_t color, bg;
+  int lastOffset;
+};
+std::vector<Marquee> marquees;
+uint32_t marqueeStartMs = 0;
+TFT_eSprite strip(&tft);
+
+void drawMarquee(Marquee &m, int offset) {
+  if (!strip.created()) return;
+  strip.fillSprite(m.bg);
+  if (m.small) strip.setTextFont(2);
+  else strip.setFreeFont(&FreeSans9pt7b);
+  strip.setTextDatum(ML_DATUM);
+  strip.setTextColor(m.color);
+  strip.drawString(m.text, -offset, m.h / 2);
+  if (offset > 0) strip.drawString(m.text, -offset + m.textW + MARQUEE_GAP, m.h / 2);
+  // The sprite is as tall as the tallest strip; copy only this strip's rows.
+  strip.pushSprite(TITLE_X, m.y, 0, 0, MARQUEE_W, m.h);
+  m.lastOffset = offset;
+}
+
+void updateMarquees() {
+  if (marquees.empty() || (isNight() && millis() > wakeUntilMs)) return;
+  uint32_t t = millis() - marqueeStartMs;
+  for (Marquee &m : marquees) {
+    uint32_t travel = m.textW + MARQUEE_GAP;
+    uint32_t cycle = MARQUEE_PAUSE_MS + travel * 1000 / MARQUEE_SPEED;
+    uint32_t inCycle = t % cycle;
+    int offset = inCycle < (uint32_t)MARQUEE_PAUSE_MS ? 0 : (inCycle - MARQUEE_PAUSE_MS) * MARQUEE_SPEED / 1000;
+    if (offset >= (int)travel) offset = 0;
+    if (offset != m.lastOffset) drawMarquee(m, offset);
+  }
+}
+
+// Draws a line at TITLE_X; if it doesn't fit, registers it to scroll instead.
+void drawTextLine(const String &text, int mid, bool small, uint16_t color, uint16_t bg) {
+  if (small) tft.setTextFont(2);
+  else tft.setFreeFont(&FreeSans9pt7b);
+  int textW = tft.textWidth(text);
+  if (textW <= MARQUEE_W || !strip.created()) {
+    tft.setTextDatum(ML_DATUM);
+    tft.setTextColor(color);
+    tft.drawString(fit(text, MARQUEE_W), TITLE_X, mid);
+    return;
+  }
+  int h = small ? 16 : 19;
+  Marquee m{text, mid - h / 2, h, textW, small, color, bg, -1};
+  drawMarquee(m, 0);
+  marquees.push_back(m);
+}
+
 void drawEventRow(const Row &r, int y) {
   const Event &e = days[r.day].events[r.ev];
+  uint16_t bg = r.now ? C_NOW_BG : C_BG;
   if (r.now) {
     tft.fillRect(0, y + 1, W, r.h - 2, C_NOW_BG);
     tft.fillRect(0, y + 1, 4, r.h - 2, C_ACCENT);
@@ -347,14 +409,9 @@ void drawEventRow(const Row &r, int y) {
   tft.setFreeFont(&FreeSans9pt7b);
   tft.setTextColor(e.allDay ? C_ALLDAY : C_TIME);
   tft.drawString(fit(e.time, TITLE_X - TIME_X - 6), TIME_X, mid);
-  tft.setTextColor(C_TEXT);
-  tft.drawString(fit(e.title, W - TITLE_X - 6), TITLE_X, mid);
+  drawTextLine(e.title, mid, false, C_TEXT, bg);
   String line2 = secondLine(e, r.now);
-  if (line2.length()) {
-    tft.setTextFont(2);
-    tft.setTextColor(C_DIM);
-    tft.drawString(fit(line2, W - TITLE_X - 6), TITLE_X, mid + 17);
-  }
+  if (line2.length()) drawTextLine(line2, mid + 17, true, C_DIM, bg);
 }
 
 bool drawBody(bool force = true) {
@@ -366,6 +423,8 @@ bool drawBody(bool force = true) {
   sig ^= page * 7919u;
   if (!force && sig == bodySig) return false;
   bodySig = sig;
+  marquees.clear();
+  marqueeStartMs = millis();
 
   tft.fillRect(0, BODY_Y, W, BODY_H, C_BG);
   if (!haveData) {
@@ -676,6 +735,8 @@ void setup() {
   tft.init();
   tft.setRotation(cfg.flip ? 3 : 1);
   tft.invertDisplay(cfg.invert);
+  strip.setColorDepth(16);
+  strip.createSprite(MARQUEE_W, 19);  // ~9 KB; if it fails, long text is just cut off with "..."
   ledcSetup(BL_CHANNEL, 5000, 8);
   ledcAttachPin(BACKLIGHT, BL_CHANNEL);
   setBacklight(100);
@@ -727,6 +788,7 @@ void loop() {
     drawBody(true);
     drawFooter();
   }
+  updateMarquees();
   updateBacklight();
   delay(10);
 }
