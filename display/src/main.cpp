@@ -18,7 +18,6 @@
 #include <ArduinoJson.h>
 #include <SPI.h>
 #include <TFT_eSPI.h>
-#include <XPT2046_Touchscreen.h>
 #include <vector>
 
 // ---------------------------------------------------------------------------------------------
@@ -57,7 +56,9 @@ static const uint16_t C_ERROR = RGB(255, 110, 100);
 // ---------------------------------------------------------------------------------------------
 TFT_eSPI tft;
 SPIClass touchSpi(VSPI);
-XPT2046_Touchscreen ts(TOUCH_CS, TOUCH_IRQ);
+struct TS_Point {
+  int16_t x = 0, y = 0, z = 0;
+};
 Preferences prefs;
 
 struct Settings {
@@ -945,9 +946,44 @@ void touchResult(int &sx, int &sy, int &ex, int &ey, int &tx, int &ty) {
 
 // A touch counts only if the controller's pen-down line (IRQ) is actually low and the reading is
 // sane. Some boards read as "pressed" with garbage values after a cold power-up; this ignores that.
+// One conversion frame: reads the result of the previous command and starts the next one.
+static inline int16_t touchFrame(uint8_t next) { return touchSpi.transfer16(next) >> 3; }
+
+static int16_t middleOf4(int16_t *v) {
+  std::sort(v, v + 4);
+  return (v[1] + v[2]) / 2;
+}
+
+// Reads the XPT2046 touch chip directly. Each axis is measured eight times in a row and only the
+// last four count: on some boards the panel needs that long to settle after the chip switches
+// axis, and reading X and Y alternately (as most libraries do) mixes the two together.
+void touchMeasure(TS_Point &p) {
+  static const int N = 8;
+  int16_t xs[4], ys[4];
+  touchSpi.beginTransaction(SPISettings(1000000, MSBFIRST, SPI_MODE0));
+  digitalWrite(TOUCH_CS, LOW);
+  touchSpi.transfer(0xB1);              // pressure, first half
+  int z1 = touchFrame(0xC1);            // ... second half
+  int z2 = touchFrame(0x91);            // start X
+  for (int i = 0; i < N; i++) {
+    int16_t v = touchFrame(i < N - 1 ? 0x91 : 0xD1);  // the last one starts Y
+    if (i >= N - 4) xs[i - (N - 4)] = v;
+  }
+  for (int i = 0; i < N; i++) {
+    int16_t v = touchFrame(i < N - 1 ? 0xD1 : 0xD0);  // the last one powers down, pen-down line back on
+    if (i >= N - 4) ys[i - (N - 4)] = v;
+  }
+  touchFrame(0);
+  digitalWrite(TOUCH_CS, HIGH);
+  touchSpi.endTransaction();
+  p.z = constrain(z1 + 4095 - z2, 0, 4095);
+  p.x = middleOf4(xs);
+  p.y = middleOf4(ys);
+}
+
 bool readRaw(TS_Point &p) {
   if (digitalRead(TOUCH_IRQ) != LOW) return false;
-  p = ts.getPoint();
+  touchMeasure(p);
   return !(p.z < 400 || p.x < 100 || p.x > 4000 || p.y < 100 || p.y > 4000);
 }
 
@@ -1081,7 +1117,7 @@ void calibrateTouch() {
         continue;
       }
       raw += String(i ? " " : "") + String(r[i].x) + "," + String(r[i].y);
-      note = raw;
+      note = i < 4 ? raw : String("");
       i++;
     }
     Serial.println("Touch raw: " + raw);
@@ -1092,7 +1128,7 @@ void calibrateTouch() {
     if (ok) {
       px = t.ax * r[4].x + t.bx * r[4].y + t.cx;
       py = t.ay * r[4].x + t.by * r[4].y + t.cy;
-      ok = fabsf(px - tx[4]) <= 30 && fabsf(py - ty[4]) <= 30;
+      ok = fabsf(px - tx[4]) <= 40 && fabsf(py - ty[4]) <= 40;
     }
     if (ok && fitTouch(r, tx, ty, 5, t, worst)) {  // use all five for the final numbers
       t.flip = cfg.flip;
@@ -1102,13 +1138,16 @@ void calibrateTouch() {
       Serial.printf("Touch calibrated: x = %.5f %.5f %.1f, y = %.5f %.5f %.1f\n", t.ax, t.bx, t.cx, t.ay, t.by, t.cy);
       drawMessage("Touch setup", {"Done. Taps now land where you touch.",
                                   "To redo it, hold the screen 5 s, let go, and tick the box in setup."});
-      calNote(raw);
       delay(2500);
       return;
     }
+    String corners = raw.substring(0, raw.lastIndexOf(' '));
     drawMessage("Touch setup", {"Those taps didn't line up with the crosses.",
-                                attempt < 3 ? "Let's try again." : "Carrying on without it for now."}, C_ERROR);
-    calNote(raw, C_TEXT);
+                                attempt < 3 ? "Let's try again." : "Carrying on without it for now.",
+                                "(corners " + String((int)worst) + " px, middle " + String(r[4].x) + "," +
+                                    String(r[4].y) + " seen at " + String((int)px) + "," + String((int)py) + ")"},
+                C_ERROR);
+    calNote(corners, C_TEXT);
     delay(attempt < 3 ? 6000 : 15000);  // long enough to read (or photograph) the numbers
     note = "";
   }
@@ -1234,8 +1273,11 @@ void setup() {
   setBacklight(100);
 
   touchSpi.begin(TOUCH_CLK, TOUCH_MISO, TOUCH_MOSI, TOUCH_CS);
-  ts.begin(touchSpi);
-  ts.setRotation(cfg.flip ? 3 : 1);
+  pinMode(TOUCH_CS, OUTPUT);
+  digitalWrite(TOUCH_CS, HIGH);
+  pinMode(TOUCH_IRQ, INPUT);
+  TS_Point warmUp;
+  touchMeasure(warmUp);  // leaves the chip powered down with its pen-down line enabled
   if (!tcal.ok || tcal.flip != cfg.flip) {
     delay(300);  // let the touch controller settle after power-up
     calibrateTouch();
