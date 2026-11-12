@@ -115,3 +115,12 @@ test('relative dates: "a week from today", "next week tue"', () => {
   const q = parseMessage('what do i have a week from today', fri);
   assert.equal(`${q.cmd} ${local(q.start)}`, 'agenda 2026-11-13 0:00');
 });
+
+test('"am" and "and" are not read as lengths', () => {
+  const tue = new Date(2026, 10, 10, 18, 45);
+  const ev = t => { const r = parseMessage(t, tue); return `${r.title} ${local(r.start)} ${local(r.end)}`; };
+  assert.equal(ev('Tomorrow 8:00 a.m. call and cancel doctor appointment'), 'Call and cancel doctor appointment 2026-11-11 8:00 2026-11-11 9:00');
+  assert.equal(ev('Tomorrow 8:00 am call doctor'), 'Call doctor 2026-11-11 8:00 2026-11-11 9:00');
+  assert.equal(ev('Lunch and shopping sat 1pm'), 'Lunch and shopping 2026-11-14 13:00 2026-11-14 14:00');
+  assert.equal(ev('Golf sat 10am 4h'), 'Golf 2026-11-14 10:00 2026-11-14 14:00');
+});
