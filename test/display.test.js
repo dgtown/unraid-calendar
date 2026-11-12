@@ -57,3 +57,48 @@ test('/api/display needs the feed token and expands repeating events', async () 
       [[['Standup', '9:00 AM', true]], [['Standup', '9:00 AM', true]], [['Standup', '9:00 AM', true]]]);
   } finally { server.close(); }
 });
+
+test('month grid counts events per day, including multi-day and all-day ones', () => {
+  const { buildMonth } = require('../src/display');
+  const m = buildMonth([
+    ev('Dentist', at(2026, 11, 3, 9), at(2026, 11, 3, 10)),
+    ev('Lunch', at(2026, 11, 3, 12), at(2026, 11, 3, 13)),
+    ev('Trip', at(2026, 11, 20, 18), at(2026, 11, 22, 9)),
+    ev('Holiday', at(2026, 11, 26), at(2026, 11, 27), { all_day: 1 }),
+    ev('Ends at midnight', at(2026, 11, 28, 22), at(2026, 11, 29)),
+  ], at(2026, 11, 11, 15), 2026, 11);
+  assert.equal(m.title, 'November 2026');
+  assert.equal(m.firstWeekday, 0); // Nov 1 2026 is a Sunday
+  assert.equal(m.days, 30);
+  assert.equal(m.today, 11);
+  assert.equal(m.counts.length, 30);
+  assert.deepEqual([m.counts[2], m.counts[19], m.counts[20], m.counts[21], m.counts[22], m.counts[25], m.counts[27], m.counts[28]],
+    [2, 1, 1, 1, 0, 1, 1, 0]);
+  assert.equal(buildMonth([], at(2026, 11, 11), 2026, 12).today, 0);
+});
+
+test('a start date shows that day with a relative label', () => {
+  const out = buildDisplay([], at(2026, 11, 11, 15), 2, 30, new Date(2026, 10, 10));
+  assert.deepEqual(out.days.map(d => [d.date, d.label]), [['2026-11-10', 'Yesterday'], ['2026-11-11', 'Today']]);
+});
+
+test('/api/display includes this month; /api/display/month serves others', async () => {
+  const app = require('../src/server');
+  const server = app.listen(0);
+  await new Promise(r => server.on('listening', r));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  try {
+    const body = await (await fetch(base + '/api/display?token=displaytoken&days=1&start=2026-12-25')).json();
+    assert.equal(body.days[0].date, '2026-12-25');
+    const now = new Date();
+    assert.equal(body.month.month, now.getMonth() + 1);
+    // The daily Standup from the earlier test starts today.
+    assert.ok(body.month.counts.slice(now.getDate() - 1).every(n => n >= 1));
+    assert.equal(body.month.today, now.getDate());
+    const r = await fetch(base + '/api/display/month?token=displaytoken&ym=2027-02');
+    const feb = await r.json();
+    assert.deepEqual([feb.title, feb.days, feb.firstWeekday, feb.today], ['February 2027', 28, 1, 0]);
+    assert.equal((await fetch(base + '/api/display/month?token=displaytoken&ym=2027-13')).status, 400);
+    assert.equal((await fetch(base + '/api/display/month?ym=2027-02')).status, 403);
+  } finally { server.close(); }
+});

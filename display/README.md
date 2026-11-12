@@ -4,8 +4,12 @@ Firmware for the ESP32-2432S028R "Cheap Yellow Display" (2.8" 320x240 touchscree
 next few days of your calendar, refreshing every few minutes over Wi-Fi.
 
 - Agenda for today and the coming days (7 by default), with the event that's on now highlighted
+- Month view with a dot for each event (up to three per day); tap a day to see its events
 - Clock in the top bar, using the calendar server's time zone
-- Tap the right half for the next page, the left half for the previous page, the top bar to refresh
+- Tap the top bar to switch between the list and the month (it remembers your choice)
+- List: tap the right half (or swipe left) for the next page, the left half for the previous page
+- Month: swipe left/right for the next/previous month; in a day, swipe for the next/previous day and
+  tap the top bar to go back to the month
 - Dims at night (10pm-7am by default); a tap lights it up for 30 seconds
 - Everything is set up from your phone, no code changes needed
 

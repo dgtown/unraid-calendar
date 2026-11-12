@@ -1,8 +1,11 @@
 // Calendar viewer for the ESP32-2432S028R "Cheap Yellow Display" (2.8" 320x240 touchscreen).
 //
-// Fetches /api/display?token=FEED_TOKEN from the calendar app every few minutes and shows an agenda.
-// Touch: tap the right half for the next page, the left half for the previous one, the top bar to
-// refresh now. Hold the screen for 5 seconds (or while it boots) to open the setup portal.
+// Fetches /api/display?token=FEED_TOKEN from the calendar app every few minutes and shows either an
+// agenda list or a month grid with a dot for each event. Touch:
+//   - tap the top bar to switch between the list and the month
+//   - list: tap the right/left half (or swipe) for the next/previous page
+//   - month: swipe for the next/previous month, tap a day to see its events (top bar goes back)
+// Hold the screen for 5 seconds (or while it boots) to open the setup portal.
 
 #include <Arduino.h>
 #include <WiFi.h>
@@ -72,8 +75,26 @@ struct Day {
   std::vector<Event> events;
 };
 
-std::vector<Day> days;
+std::vector<Day> days;        // the agenda (today onwards)
+std::vector<Day> dayDetail;   // one day picked from the month grid
 bool haveData = false;
+
+struct Month {
+  bool valid = false;
+  String title;
+  int year = 0, month = 0, firstWeekday = 0, ndays = 0, today = 0;  // today: day number, 0 = not this month
+  std::vector<uint8_t> counts;                                       // events per day
+};
+Month curMonth;    // this month, sent with every agenda fetch
+Month otherMonth;  // a month browsed to with a swipe
+int monthDelta = 0;  // months away from this one (0 = curMonth)
+int detailY = 0, detailM = 0, detailD = 0;  // date shown in dayDetail
+
+enum View : uint8_t { VIEW_AGENDA, VIEW_MONTH, VIEW_DAY };
+View view = VIEW_AGENDA;
+
+const Month &shownMonth() { return monthDelta == 0 ? curMonth : otherMonth; }
+std::vector<Day> &listDays() { return view == VIEW_DAY ? dayDetail : days; }
 uint32_t serverNow = 0, syncedAtMs = 0;  // server time at the last fetch, and millis() then
 int32_t utcOffset = 0;                  // seconds east of UTC, from the server
 String updatedText, statusText;
@@ -120,6 +141,13 @@ void loadSettings() {
   cfg.dimLevel = prefs.getInt("dimLevel", 10);
   cfg.flip = prefs.getBool("flip", false);
   cfg.invert = prefs.getBool("invert", false);
+  view = prefs.getUChar("view", VIEW_AGENDA) == VIEW_MONTH ? VIEW_MONTH : VIEW_AGENDA;
+  prefs.end();
+}
+
+void saveView() {
+  prefs.begin("cal", false);
+  prefs.putUChar("view", view == VIEW_MONTH ? VIEW_MONTH : VIEW_AGENDA);
   prefs.end();
 }
 
@@ -218,7 +246,10 @@ void drawHeader() {
   tft.setTextColor(C_HEADER_TEXT);
   String clock = clockText();
   int clockW = clock.length() ? tft.textWidth(clock) + 16 : 0;
-  String date = haveData && !days.empty() ? days[0].longTitle : String("Calendar");
+  String date = "Calendar";
+  if (view == VIEW_MONTH && shownMonth().valid) date = shownMonth().title;
+  else if (view == VIEW_DAY && !dayDetail.empty()) date = dayDetail[0].longTitle;
+  else if (haveData && !days.empty()) date = days[0].longTitle;
   tft.setTextDatum(ML_DATUM);
   tft.drawString(fit(date, W - 16 - clockW), 8, HEADER_H / 2);
   if (clock.length()) {
@@ -234,7 +265,11 @@ void drawFooter() {
   tft.setTextFont(2);
   tft.setTextDatum(ML_DATUM);
   String left = statusText.length() ? statusText : (updatedText.length() ? "Updated " + updatedText : String(""));
-  String right = pageCount > 1 ? String(page + 1) + " / " + String(pageCount) + "  >" : String("");
+  String right;
+  if (view == VIEW_MONTH) right = "< swipe >";
+  else if (pageCount > 1) right = String(page + 1) + " / " + String(pageCount) + "  >";
+  else if (view == VIEW_DAY) right = "top bar: back";
+  else right = "top bar: month";
   int rightW = right.length() ? tft.textWidth(right) + 12 : 0;
   tft.setTextColor(statusIsError ? C_ERROR : C_DIM);
   tft.drawString(fit(left, W - 12 - rightW), 6, y + FOOTER_H / 2 + 1);
@@ -276,11 +311,13 @@ std::vector<Row> buildRows(uint32_t &sig) {
   uint32_t t = nowUtc();
   sig = 2166136261u;
   auto mix = [&](uint32_t v) { sig = (sig ^ v) * 16777619u; };
+  std::vector<Day> &days = listDays();
+  bool hidePast = view == VIEW_AGENDA;
   for (int d = 0; d < (int)days.size(); d++) {
     std::vector<Row> evRows;
     for (int i = 0; i < (int)days[d].events.size(); i++) {
       const Event &e = days[d].events[i];
-      if (d == 0 && t && e.stop <= t && !e.allDay) continue;  // already over today
+      if (hidePast && d == 0 && t && e.stop <= t && !e.allDay) continue;  // already over today
       bool now = eventIsNow(e, t);
       int h = EVENT_H + (secondLine(e, now).length() ? LINE2_H : 0);
       evRows.push_back({ROW_EVENT, (int16_t)d, (int16_t)i, (int16_t)h, now});
@@ -319,7 +356,7 @@ std::vector<int> paginate(const std::vector<Row> &rows) {
 }
 
 void drawDayRow(int d, int y, bool continued) {
-  const Day &day = days[d];
+  const Day &day = listDays()[d];
   tft.setTextDatum(ML_DATUM);
   tft.setFreeFont(&FreeSansBold9pt7b);
   tft.setTextColor(C_ACCENT);
@@ -398,7 +435,7 @@ void drawTextLine(const String &text, int mid, bool small, uint16_t color, uint1
 }
 
 void drawEventRow(const Row &r, int y) {
-  const Event &e = days[r.day].events[r.ev];
+  const Event &e = listDays()[r.day].events[r.ev];
   uint16_t bg = r.now ? C_NOW_BG : C_BG;
   if (r.now) {
     tft.fillRect(0, y + 1, W, r.h - 2, C_NOW_BG);
@@ -414,9 +451,80 @@ void drawEventRow(const Row &r, int y) {
   if (line2.length()) drawTextLine(line2, mid + 17, true, C_DIM, bg);
 }
 
+// Month grid geometry: a row of weekday names, then 4-6 week rows.
+static const int WEEKDAY_H = 18;
+int monthRows(const Month &m) { return (m.firstWeekday + m.ndays + 6) / 7; }
+int cellH(const Month &m) { return (BODY_H - WEEKDAY_H) / monthRows(m); }
+
+// Day number under a touch, or 0.
+int monthDayAt(int x, int y) {
+  const Month &m = shownMonth();
+  if (!m.valid || y < BODY_Y + WEEKDAY_H) return 0;
+  int row = (y - BODY_Y - WEEKDAY_H) / cellH(m), col = x * 7 / W;
+  int d = row * 7 + col - m.firstWeekday + 1;
+  return d >= 1 && d <= m.ndays && row < monthRows(m) ? d : 0;
+}
+
+uint32_t monthSig() {
+  const Month &m = shownMonth();
+  uint32_t sig = 2166136261u;
+  auto mix = [&](uint32_t v) { sig = (sig ^ v) * 16777619u; };
+  mix(0x4D);
+  mix(m.valid);
+  mix(m.year * 13 + m.month);
+  mix(m.today);
+  for (uint8_t c : m.counts) mix(c);
+  return sig;
+}
+
+void drawMonth() {
+  tft.fillRect(0, BODY_Y, W, BODY_H, C_BG);
+  const Month &m = shownMonth();
+  if (!m.valid) {
+    tft.setTextDatum(MC_DATUM);
+    tft.setFreeFont(&FreeSans9pt7b);
+    tft.setTextColor(C_DIM);
+    tft.drawString(haveData && monthDelta == 0 ? "Update the calendar app for this view" : "Loading month...",
+                   W / 2, BODY_Y + BODY_H / 2);
+    return;
+  }
+  static const char *names[] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
+  tft.setTextFont(2);
+  tft.setTextDatum(MC_DATUM);
+  for (int c = 0; c < 7; c++) {
+    tft.setTextColor(c == 0 || c == 6 ? C_ACCENT : C_DIM);
+    tft.drawString(names[c], (2 * c + 1) * W / 14, BODY_Y + WEEKDAY_H / 2);
+  }
+  int rows = monthRows(m), ch = cellH(m), top = BODY_Y + WEEKDAY_H;
+  for (int r = 0; r < rows; r++) tft.drawFastHLine(4, top + r * ch, W - 8, C_LINE);
+  bool pastMonth = monthDelta < 0;
+  for (int d = 1; d <= m.ndays; d++) {
+    int idx = m.firstWeekday + d - 1, col = idx % 7, row = idx / 7;
+    int cx = (2 * col + 1) * W / 14, y0 = top + row * ch;
+    bool past = pastMonth || (m.today && d < m.today);
+    bool isToday = d == m.today;
+    if (isToday) tft.fillRoundRect(cx - 15, y0 + 2, 30, 18, 5, C_ACCENT);
+    tft.setTextColor(isToday ? C_HEADER_TEXT : past ? C_DIM : C_TEXT);
+    tft.drawString(String(d), cx, y0 + 11);
+    int n = d <= (int)m.counts.size() ? min<int>(m.counts[d - 1], 3) : 0;
+    for (int i = 0; i < n; i++)
+      tft.fillCircle(cx - (n - 1) * 4 + i * 8, y0 + ch - 6, 2, past ? C_DIM : C_TIME);
+  }
+}
+
 bool drawBody(bool force = true) {
+  if (view == VIEW_MONTH) {
+    uint32_t sig = monthSig();
+    if (!force && sig == bodySig) return false;
+    bodySig = sig;
+    marquees.clear();
+    pageCount = 1;
+    drawMonth();
+    return true;
+  }
   uint32_t sig;
   std::vector<Row> rows = buildRows(sig);
+  std::vector<Day> &days = listDays();
   std::vector<int> starts = paginate(rows);
   pageCount = starts.size();
   if (page >= pageCount) page = pageCount - 1;
@@ -455,7 +563,7 @@ bool drawBody(bool force = true) {
     }
     y += r.h;
   }
-  if (pageCount == 1 && rows.size() <= 2 && days.size() > 1) {
+  if (view == VIEW_AGENDA && pageCount == 1 && rows.size() <= 2 && days.size() > 1) {
     tft.setTextDatum(MC_DATUM);
     tft.setTextFont(2);
     tft.setTextColor(C_DIM);
@@ -503,13 +611,13 @@ uint32_t fnv(const String &s) {
   return h;
 }
 
-// Returns true when the calendar was fetched. Redraws whatever changed.
-bool fetchCalendar() {
+// GETs a path from the calendar app and parses the JSON. Shows what went wrong in the footer.
+bool getJson(const String &path, JsonDocument &doc, String *body = nullptr) {
   if (WiFi.status() != WL_CONNECTED) {
     setStatus("No Wi-Fi, retrying...", true);
     return false;
   }
-  String url = baseUrl() + "/api/display?days=" + String(cfg.days) + "&token=" + urlEncode(cfg.token);
+  String url = baseUrl() + path + (path.indexOf('?') >= 0 ? "&" : "?") + "token=" + urlEncode(cfg.token);
   WiFiClient plain;
   WiFiClientSecure secure;
   HTTPClient http;
@@ -538,17 +646,20 @@ bool fetchCalendar() {
     setStatus(msg, true);
     return false;
   }
-  String body = http.getString();
+  String text = http.getString();
   http.end();
-
-  JsonDocument doc;
-  DeserializationError err = deserializeJson(doc, body);
+  DeserializationError err = deserializeJson(doc, text);
   if (err) {
     setStatus(String("Bad reply from calendar: ") + err.c_str(), true);
     return false;
   }
-  std::vector<Day> fresh;
-  for (JsonObject jd : doc["days"].as<JsonArray>()) {
+  if (body) *body = text;
+  return true;
+}
+
+std::vector<Day> parseDays(JsonArray arr) {
+  std::vector<Day> out;
+  for (JsonObject jd : arr) {
     Day d;
     d.label = jd["label"] | "";
     d.title = jd["title"] | "";
@@ -565,8 +676,35 @@ bool fetchCalendar() {
       e.stop = je["stop"] | 0;
       d.events.push_back(e);
     }
-    fresh.push_back(d);
+    out.push_back(d);
   }
+  return out;
+}
+
+Month parseMonth(JsonObject jm) {
+  Month m;
+  if (jm.isNull()) return m;
+  m.title = jm["title"] | "";
+  m.year = jm["year"] | 0;
+  m.month = jm["month"] | 0;
+  m.firstWeekday = jm["firstWeekday"] | 0;
+  m.ndays = jm["days"] | 0;
+  m.today = jm["today"] | 0;
+  for (JsonVariant v : jm["counts"].as<JsonArray>()) {
+    int c = v.as<int>();
+    m.counts.push_back(c > 255 ? 255 : c < 0 ? 0 : c);
+  }
+  m.valid = m.year > 0 && m.month >= 1 && m.month <= 12 && m.ndays >= 28 && m.ndays <= 31;
+  return m;
+}
+
+// Returns true when the calendar was fetched. Redraws whatever changed.
+bool fetchCalendar() {
+  JsonDocument doc;
+  String body;
+  if (!getJson("/api/display?days=" + String(cfg.days), doc, &body)) return false;
+  std::vector<Day> fresh = parseDays(doc["days"].as<JsonArray>());
+  curMonth = parseMonth(doc["month"].as<JsonObject>());
   serverNow = doc["now"] | 0;
   syncedAtMs = millis();
   utcOffset = doc["offset"] | 0;
@@ -574,7 +712,7 @@ bool fetchCalendar() {
   statusText = "";
   statusIsError = false;
 
-  // Only repaint the agenda when something changed ("now" and "updated" change on every fetch).
+  // Only repaint when something changed ("now" and "updated" change on every fetch).
   doc.remove("now");
   doc.remove("updated");
   String stable;
@@ -584,12 +722,51 @@ bool fetchCalendar() {
   payloadHash = h;
   days.swap(fresh);
   haveData = true;
-  if (changed) drawAll();
+  if (changed && view != VIEW_DAY && !(view == VIEW_MONTH && monthDelta != 0)) drawAll();
   else {
     drawHeader();
     drawFooter();
   }
   return true;
+}
+
+// The month `monthDelta` months from this one, into otherMonth.
+bool fetchOtherMonth() {
+  if (!curMonth.valid) return false;
+  int idx = curMonth.year * 12 + (curMonth.month - 1) + monthDelta;
+  char ym[8];
+  snprintf(ym, sizeof ym, "%04d-%02d", idx / 12, idx % 12 + 1);
+  JsonDocument doc;
+  setStatus("Loading...", false);
+  if (!getJson(String("/api/display/month?ym=") + ym, doc)) return false;
+  otherMonth = parseMonth(doc.as<JsonObject>());
+  setStatus("", false);
+  return otherMonth.valid;
+}
+
+int daysIn(int y, int m) {
+  static const uint8_t n[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+  return m == 2 && ((y % 4 == 0 && y % 100 != 0) || y % 400 == 0) ? 29 : n[m - 1];
+}
+
+// One day's events (from the month grid) into dayDetail.
+bool fetchDay(int y, int m, int d) {
+  if (d < 1) {
+    if (--m < 1) m = 12, y--;
+    d = daysIn(y, m);
+  } else if (d > daysIn(y, m)) {
+    if (++m > 12) m = 1, y++;
+    d = 1;
+  }
+  char date[12];
+  snprintf(date, sizeof date, "%04d-%02d-%02d", y, m, d);
+  JsonDocument doc;
+  setStatus("Loading...", false);
+  if (!getJson(String("/api/display?days=1&start=") + date, doc)) return false;
+  dayDetail = parseDays(doc["days"].as<JsonArray>());
+  detailY = y, detailM = m, detailD = d;
+  setStatus("", false);
+  return !dayDetail.empty();
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -670,7 +847,7 @@ void runPortal(bool onDemand) {
 // ---------------------------------------------------------------------------------------------
 bool touchDown = false, longPressFired = false;
 uint32_t touchStartMs = 0, touchSeenMs = 0;
-int touchX = 0, touchY = 0;
+int touchX = 0, touchY = 0, touchLastX = 0, touchLastY = 0;
 
 bool readTouch(int &x, int &y) {
   if (!(ts.tirqTouched() && ts.touched())) return false;
@@ -680,23 +857,63 @@ bool readTouch(int &x, int &y) {
   return true;
 }
 
-void onTap(int x, int y) {
-  if (isNight() && millis() > wakeUntilMs) {  // first tap at night just lights the screen
+void switchView(View v) {
+  view = v;
+  page = 0;
+  if (v != VIEW_DAY) saveView();
+  drawAll();
+}
+
+// Returns true if the touch only woke the screen.
+bool wakeTouch() {
+  if (isNight() && millis() > wakeUntilMs) {  // first touch at night just lights the screen
     wakeUntilMs = millis() + 30000;
     updateBacklight();
-    return;
+    return true;
   }
   if (isNight()) wakeUntilMs = millis() + 30000;
-  if (y < HEADER_H) {
-    setStatus("Refreshing...", false);
-    nextFetchInMs = 0;
-    lastFetchMs = millis();
-    return;
-  }
+  return false;
+}
+
+void turnPage(int dir) {
   if (pageCount <= 1) return;
-  page = x >= W / 2 ? (page + 1) % pageCount : (page > 0 ? page - 1 : pageCount - 1);
+  page = (page + dir + pageCount) % pageCount;
   drawBody(true);
   drawFooter();
+}
+
+void onTap(int x, int y) {
+  if (wakeTouch()) return;
+  if (y < HEADER_H) {  // top bar: list <-> month; from a day, back to its month
+    if (view == VIEW_AGENDA) monthDelta = 0;
+    switchView(view == VIEW_MONTH ? VIEW_AGENDA : VIEW_MONTH);
+    return;
+  }
+  if (view == VIEW_MONTH) {
+    int d = monthDayAt(x, y);
+    const Month &m = shownMonth();
+    if (d && fetchDay(m.year, m.month, d)) switchView(VIEW_DAY);
+    return;
+  }
+  turnPage(x >= W / 2 ? 1 : -1);
+}
+
+// dir: +1 = swiped left (next), -1 = swiped right (previous).
+void onSwipe(int dir) {
+  if (wakeTouch()) return;
+  if (view == VIEW_MONTH) {
+    monthDelta += dir;
+    if (monthDelta != 0 && !fetchOtherMonth()) monthDelta -= dir;
+    page = 0;
+    drawAll();
+  } else if (view == VIEW_DAY) {
+    if (fetchDay(detailY, detailM, detailD + dir)) {
+      page = 0;
+      drawAll();
+    }
+  } else {
+    turnPage(dir);
+  }
 }
 
 void handleTouch() {
@@ -704,12 +921,16 @@ void handleTouch() {
   uint32_t ms = millis();
   if (readTouch(x, y)) {
     touchSeenMs = ms;
+    if (touchDown) {
+      touchLastX = x;
+      touchLastY = y;
+    }
     if (!touchDown) {
       touchDown = true;
       longPressFired = false;
       touchStartMs = ms;
-      touchX = x;
-      touchY = y;
+      touchX = touchLastX = x;
+      touchY = touchLastY = y;
     } else if (!longPressFired && ms - touchStartMs > 5000) {
       longPressFired = true;
       runPortal(true);  // restarts when done
@@ -717,7 +938,10 @@ void handleTouch() {
   } else if (touchDown && ms - touchSeenMs > 80) {  // released (with a little debounce)
     touchDown = false;
     lastTouchMs = ms;
-    if (!longPressFired) onTap(touchX, touchY);
+    if (longPressFired) return;
+    int dx = touchLastX - touchX, dy = touchLastY - touchY;
+    if (abs(dx) > 50 && abs(dx) > 2 * abs(dy)) onSwipe(dx < 0 ? 1 : -1);
+    else onTap(touchX, touchY);
   }
 }
 
@@ -782,11 +1006,12 @@ void loop() {
     lastLocalDay = t / 86400;
   }
 
-  // Go back to the first page after a minute without touches.
-  if (page != 0 && !touchDown && ms - lastTouchMs > 60000) {
+  // After a minute and a half without touches, go back to the first page / this month.
+  if ((page != 0 || monthDelta != 0 || view == VIEW_DAY) && !touchDown && ms - lastTouchMs > 90000) {
     page = 0;
-    drawBody(true);
-    drawFooter();
+    monthDelta = 0;
+    if (view == VIEW_DAY) view = VIEW_MONTH;
+    drawAll();
   }
   updateMarquees();
   updateBacklight();
