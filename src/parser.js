@@ -157,7 +157,9 @@ function relativeDates(text, ref) {
 // ---------------------------------------------------------------------------
 // Commands. Returns { type: 'command', cmd, ... } or null (= treat as an event).
 // ---------------------------------------------------------------------------
-const DUR = "(?:half an hour|an? hour and a half|(?:\\d+(?:\\.\\d+)?|an?|one|two|three|four|five|six|half an?)\\s*(?:m|mins?|minutes?|h|hrs?|hours?|d|days?))";
+// Digits may touch a short unit ("2h", "90m"); spelled-out numbers need a space and a full unit,
+// so "am" and "and" are never read as "a minute" / "a day".
+const DUR = "(?:half an hour|an? hour and a half|\\d+(?:\\.\\d+)?\\s*(?:m|mins?|minutes?|h|hrs?|hours?|d|days?)|(?:an?|one|two|three|four|five|six|half an?)\\s+(?:mins?|minutes?|hrs?|hours?|days?))(?![a-z])";
 const durRe = s => new RegExp(s.replace(/DUR/g, DUR));
 
 // "30 min", "1h", "an hour", "half an hour", "1.5 hours" -> minutes
