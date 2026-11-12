@@ -653,7 +653,7 @@ bool getJson(const String &path, JsonDocument &doc, String *body = nullptr) {
     setStatus(String("Bad reply from calendar: ") + err.c_str(), true);
     return false;
   }
-  if (body) body->swap(text);
+  if (body) *body = text;
   return true;
 }
 
