@@ -276,18 +276,33 @@ void drawMessage(const String &title, const std::vector<String> &lines, uint16_t
   }
 }
 
+// In the month and day views the top bar has an arrow at each end: tap them for the previous / next
+// month or day (swiping does the same, but is fiddly on this kind of touch panel).
+static const int ARROW_ZONE = 64;  // width of the tap area around each arrow
+int headerNextX = W;               // taps at or right of this are "next"
+
 void drawHeader() {
   tft.fillRect(0, 0, W, HEADER_H, C_ACCENT);
   tft.setFreeFont(&FreeSansBold9pt7b);
   tft.setTextColor(C_HEADER_TEXT);
   String clock = clockText();
   int clockW = clock.length() ? tft.textWidth(clock) + 16 : 0;
+  bool arrows = view == VIEW_MONTH || view == VIEW_DAY;
+  int left = arrows ? 30 : 8, avail = W - left - 8 - clockW - (arrows ? 26 : 0);
   String date = "Calendar";
   if (view == VIEW_MONTH && shownMonth().valid) date = shownMonth().title;
-  else if (view == VIEW_DAY && !dayDetail.empty()) date = dayDetail[0].longTitle;
+  else if (view == VIEW_DAY && !dayDetail.empty())
+    date = tft.textWidth(dayDetail[0].longTitle) <= avail ? dayDetail[0].longTitle : dayDetail[0].title;
   else if (haveData && !days.empty()) date = days[0].longTitle;
   tft.setTextDatum(ML_DATUM);
-  tft.drawString(fit(date, W - 16 - clockW), 8, HEADER_H / 2);
+  tft.drawString(fit(date, avail), left, HEADER_H / 2);
+  headerNextX = W;
+  if (arrows) {
+    int my = HEADER_H / 2, rx = W - clockW - 12;  // rx: tip of the right arrow
+    tft.fillTriangle(8, my, 20, my - 8, 20, my + 8, C_HEADER_TEXT);
+    tft.fillTriangle(rx, my, rx - 12, my - 8, rx - 12, my + 8, C_HEADER_TEXT);
+    headerNextX = rx - 12 - (ARROW_ZONE - 12) / 2;
+  }
   if (clock.length()) {
     tft.setTextDatum(MR_DATUM);
     tft.drawString(clock, W - 8, HEADER_H / 2);
@@ -302,9 +317,9 @@ void drawFooter() {
   tft.setTextDatum(ML_DATUM);
   String left = statusText.length() ? statusText : (updatedText.length() ? "Updated " + updatedText : String(""));
   String right;
-  if (view == VIEW_MONTH) right = "< swipe >";
+  if (view == VIEW_MONTH) right = "arrows: month";
   else if (pageCount > 1) right = String(page + 1) + " / " + String(pageCount) + "  >";
-  else if (view == VIEW_DAY) right = "top bar: back";
+  else if (view == VIEW_DAY) right = "arrows: day";
   else right = "top bar: month";
   int rightW = right.length() ? tft.textWidth(right) + 12 : 0;
   tft.setTextColor(statusIsError ? C_ERROR : C_DIM);
@@ -1178,9 +1193,17 @@ void turnPage(int dir) {
   drawFooter();
 }
 
+void onSwipe(int dir);
+
 void onTap(int x, int y) {
   if (wakeTouch()) return;
-  if (y < HEADER_H) {  // top bar: list <-> month; from a day, back to its month
+  // The month view's row of weekday names does nothing itself, so it counts as top bar: a bigger target.
+  int barH = view == VIEW_MONTH ? BODY_Y + WEEKDAY_H : HEADER_H;
+  if (y < barH && (view == VIEW_MONTH || view == VIEW_DAY) && (x < ARROW_ZONE || x >= headerNextX)) {
+    onSwipe(x < ARROW_ZONE ? -1 : 1);  // arrows: previous / next month or day
+    return;
+  }
+  if (y < barH) {  // top bar: list <-> month; from a day, back to its month
     if (view == VIEW_AGENDA) monthDelta = 0;
     switchView(view == VIEW_MONTH ? VIEW_AGENDA : VIEW_MONTH);
     return;
@@ -1197,6 +1220,7 @@ void onTap(int x, int y) {
 // dir: +1 = swiped left (next), -1 = swiped right (previous).
 void onSwipe(int dir) {
   if (wakeTouch()) return;
+  lastTouchMs = millis();
   if (view == VIEW_MONTH) {
     monthDelta += dir;
     if (monthDelta != 0 && !fetchOtherMonth()) monthDelta -= dir;
@@ -1236,7 +1260,7 @@ void handleTouch() {
     } else if (longPressFired && held > 15000) {
       setStatus("", false);  // held far too long: treat as a stuck reading, not a request
     }
-  } else if (touchDown && ms - touchSeenMs > 80) {  // released (with a little debounce)
+  } else if (touchDown && ms - touchSeenMs > 120) {  // released (a short gap mid-swipe doesn't count)
     touchDown = false;
     lastTouchMs = ms;
     uint32_t held = touchSeenMs - touchStartMs;
@@ -1247,7 +1271,7 @@ void handleTouch() {
     int tapX, tapY;
     touchResult(touchX, touchY, touchLastX, touchLastY, tapX, tapY);
     int dx = touchLastX - touchX, dy = touchLastY - touchY;
-    if (abs(dx) > 50 && abs(dx) > 2 * abs(dy)) onSwipe(dx < 0 ? 1 : -1);
+    if (abs(dx) > 35 && abs(dx) * 2 > 3 * abs(dy)) onSwipe(dx < 0 ? 1 : -1);
     else onTap(tapX, tapY);
   }
 }
