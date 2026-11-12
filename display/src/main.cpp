@@ -5,7 +5,7 @@
 //   - tap the top bar to switch between the list and the month
 //   - list: tap the right/left half (or swipe) for the next/previous page
 //   - month: swipe for the next/previous month, tap a day to see its events (top bar goes back)
-// Hold the screen for 5 seconds (or while it boots) to open the setup portal.
+// Hold the screen for 5 seconds, then let go, to open the setup portal.
 
 #include <Arduino.h>
 #include <WiFi.h>
@@ -615,7 +615,7 @@ uint32_t fnv(const String &s) {
 // GETs a path from the calendar app and parses the JSON. Shows what went wrong in the footer.
 bool getJson(const String &path, JsonDocument &doc, String *body = nullptr) {
   if (WiFi.status() != WL_CONNECTED) {
-    setStatus("No Wi-Fi, retrying (hold screen 5 s for setup)", true);
+    setStatus("No Wi-Fi, retrying (hold 5 s + let go: setup)", true);
     return false;
   }
   String url = baseUrl() + path + (path.indexOf('?') >= 0 ? "&" : "?") + "token=" + urlEncode(cfg.token);
@@ -869,9 +869,12 @@ bool touchDown = false, longPressFired = false;
 uint32_t touchStartMs = 0, touchSeenMs = 0;
 int touchX = 0, touchY = 0, touchLastX = 0, touchLastY = 0;
 
+// A touch counts only if the controller's pen-down line (IRQ) is actually low and the reading is
+// sane. Some boards read as "pressed" with garbage values after a cold power-up; this ignores that.
 bool readTouch(int &x, int &y) {
-  if (!(ts.tirqTouched() && ts.touched())) return false;
+  if (digitalRead(TOUCH_IRQ) != LOW) return false;
   TS_Point p = ts.getPoint();
+  if (p.z < 400 || p.x < 100 || p.x > 4000 || p.y < 100 || p.y > 4000) return false;
   x = constrain(map(p.x, 200, 3700, 0, W - 1), 0, W - 1);
   y = constrain(map(p.y, 240, 3800, 0, H - 1), 0, H - 1);
   return true;
@@ -936,34 +939,39 @@ void onSwipe(int dir) {
   }
 }
 
+// Setup opens when the screen is held for 5 seconds and then let go. A reading that never lets go
+// (a stuck or faulty touch panel) can't open it.
 void handleTouch() {
   int x, y;
   uint32_t ms = millis();
-  // The touch chip can report phantom presses for a while after power-up: ignore it at first.
-  if (ms < 10000) {
-    readTouch(x, y);
-    return;
-  }
+  if (ms < 5000) return;  // let the touch controller settle after power-up
   if (readTouch(x, y)) {
     touchSeenMs = ms;
-    if (touchDown) {
-      touchLastX = x;
-      touchLastY = y;
-    }
     if (!touchDown) {
       touchDown = true;
       longPressFired = false;
       touchStartMs = ms;
       touchX = touchLastX = x;
       touchY = touchLastY = y;
-    } else if (!longPressFired && ms - touchStartMs > 5000) {
+      return;
+    }
+    touchLastX = x;
+    touchLastY = y;
+    uint32_t held = ms - touchStartMs;
+    if (!longPressFired && held > 5000) {
       longPressFired = true;
-      runPortal("screen held for 5 seconds");  // restarts when done
+      setStatus("Let go to open setup", false);
+    } else if (longPressFired && held > 15000) {
+      setStatus("", false);  // held far too long: treat as a stuck reading, not a request
     }
   } else if (touchDown && ms - touchSeenMs > 80) {  // released (with a little debounce)
     touchDown = false;
     lastTouchMs = ms;
-    if (longPressFired) return;
+    uint32_t held = touchSeenMs - touchStartMs;
+    if (longPressFired) {
+      if (held <= 15000) runPortal("screen held for 5 seconds");  // restarts when done
+      return;
+    }
     int dx = touchLastX - touchX, dy = touchLastY - touchY;
     if (abs(dx) > 50 && abs(dx) > 2 * abs(dy)) onSwipe(dx < 0 ? 1 : -1);
     else onTap(touchX, touchY);
@@ -998,7 +1006,7 @@ void setup() {
   WiFi.setAutoReconnect(true);
   String ssid = savedSsid();
   Serial.printf("Calendar: url=%s, saved Wi-Fi=%s\n", cfg.url.c_str(), ssid.c_str());
-  // Setup opens by itself only on first start. Later, hold the screen for 5 seconds.
+  // Setup opens by itself only on first start. Later, hold the screen 5 seconds and let go.
   if (cfg.url.isEmpty()) runPortal("first start: no calendar address saved yet");  // restarts when done
 
   drawMessage("Calendar", {"Connecting to Wi-Fi", String(">") + (ssid.length() ? ssid : String("(saved network)"))});
