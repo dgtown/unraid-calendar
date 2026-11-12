@@ -48,9 +48,25 @@ On first start the screen shows setup instructions:
 4. Tap **Save**. The display restarts and shows your calendar.
 
 The setup screen shows why it opened at the bottom. To change settings later, hold your finger on the
-screen until the bottom line says "Let go to open setup" (about 5 seconds), then let go. Once it's set up it
+screen until the bottom line says "Let go: setup" (about 5 seconds), then let go. Once it's set up it
 never opens setup by itself: if your Wi-Fi isn't back yet after a power cut, it shows "No Wi-Fi, retrying"
 and keeps trying every 30 seconds.
+
+## Updating later (over Wi-Fi, settings kept)
+
+Flashing over USB at `0x0` erases the Wi-Fi, calendar and touch settings. Once the display is running
+you can update it from a browser instead, and everything is kept:
+
+1. Download the artifact for your board from the latest green **Build display firmware** run and
+   unzip it. Use the file ending in **`-update.bin`**.
+2. On a computer on the same network, open `http://calendar-display.local/update`. If that name
+   doesn't work, use the display's address, shown for a couple of seconds each time it starts
+   ("To update later, browse to: http://192.168.x.x/update").
+3. Sign in with the name `calendar` and your `FEED_TOKEN` as the password.
+4. Choose the `-update.bin` file and press **Update**. The display shows "Updating", then restarts.
+
+The file without `-update` is only for the first install over USB. If an update ever leaves the
+display unusable, flash that one at `0x0` again.
 
 ## Troubleshooting
 
