@@ -28,8 +28,14 @@ jobs:
           key: pio-${{ hashFiles('display/platformio.ini') }}
       - run: pip install platformio
       - run: pio run -d display -e ${{ matrix.env }}
-      - run: cp display/.pio/build/${{ matrix.env }}/calendar-display-factory.bin calendar-display-${{ matrix.env }}.bin
+      # <name>.bin: everything, for the first install over USB at 0x0 (erases settings).
+      # <name>-update.bin: the program only, for http://<display>/update (keeps settings).
+      - run: |
+          cp display/.pio/build/${{ matrix.env }}/calendar-display-factory.bin calendar-display-${{ matrix.env }}.bin
+          cp display/.pio/build/${{ matrix.env }}/firmware.bin calendar-display-${{ matrix.env }}-update.bin
       - uses: actions/upload-artifact@v4
         with:
           name: calendar-display-${{ matrix.env }}
-          path: calendar-display-${{ matrix.env }}.bin
+          path: |
+            calendar-display-${{ matrix.env }}.bin
+            calendar-display-${{ matrix.env }}-update.bin

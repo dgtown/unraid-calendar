@@ -15,6 +15,9 @@
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
 #include <Preferences.h>
+#include <WebServer.h>
+#include <Update.h>
+#include <ESPmDNS.h>
 #include <ArduinoJson.h>
 #include <SPI.h>
 #include <TFT_eSPI.h>
@@ -844,7 +847,10 @@ void showSetupScreen(WiFiManager *) {
 
 // Shows the setup portal, saves what was entered and restarts. Only opened on first start (nothing
 // saved yet) or when someone holds the screen: a Wi-Fi that's slow to come back never opens it.
+void stopWeb();
+
 void runPortal(const char *why) {
+  stopWeb();  // the setup page needs port 80
   setupReason = why;
   Serial.printf("Opening setup: %s\n", why);
   WiFiManager wm;
@@ -1256,7 +1262,8 @@ void handleTouch() {
     uint32_t held = ms - touchStartMs;
     if (!longPressFired && held > 5000) {
       longPressFired = true;
-      setStatus("Let go to open setup", false);
+      setStatus(WiFi.status() == WL_CONNECTED ? String("Let go: setup. ") + WiFi.localIP().toString()
+                                               : String("Let go to open setup"), false);
     } else if (longPressFired && held > 15000) {
       setStatus("", false);  // held far too long: treat as a stuck reading, not a request
     }
@@ -1274,6 +1281,118 @@ void handleTouch() {
     if (abs(dx) > 35 && abs(dx) * 2 > 3 * abs(dy)) onSwipe(dx < 0 ? 1 : -1);
     else onTap(tapX, tapY);
   }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Updates over Wi-Fi: http://<display>/update takes a new firmware file and keeps all settings.
+// Signing in uses the name "calendar" and the FEED_TOKEN as the password.
+// ---------------------------------------------------------------------------------------------
+WebServer web(80);
+bool webStarted = false, otaAllowed = false, otaDone = false;
+String otaError;
+uint32_t otaShownKb = 0;
+static const char *FW_BUILD = __DATE__ " " __TIME__;
+static const char *WEB_USER = "calendar";
+static const char *MDNS_NAME = "calendar-display";
+
+String webPage(const String &body) {
+  return "<!doctype html><html><head><meta name=viewport content='width=device-width,initial-scale=1'>"
+         "<title>Calendar display</title><style>body{font-family:sans-serif;max-width:32em;margin:2em auto;"
+         "padding:0 1em;line-height:1.5}input,button{font-size:1em;margin:.5em 0}</style></head><body>"
+         "<h2>Calendar display</h2>" + body + "<p><small>Firmware built " + FW_BUILD + "</small></p></body></html>";
+}
+
+bool webSignedIn() { return cfg.token.length() && web.authenticate(WEB_USER, cfg.token.c_str()); }
+
+bool webAuth() {
+  if (webSignedIn()) return true;
+  web.requestAuthentication(BASIC_AUTH, "Calendar display",
+                            "Sign in with the name \"calendar\" and your FEED_TOKEN as the password.");
+  return false;
+}
+
+// Called repeatedly while the file arrives.
+void otaUpload() {
+  HTTPUpload &up = web.upload();
+  if (up.status == UPLOAD_FILE_START) {
+    otaError = "";
+    otaDone = false;
+    otaShownKb = 0;
+    otaAllowed = webSignedIn();
+    if (!otaAllowed) return;
+    Serial.printf("Update: receiving %s\n", up.filename.c_str());
+    setBacklight(100);
+    drawMessage("Updating", {"Receiving new firmware over Wi-Fi.", "Don't unplug the display."});
+    if (!Update.begin(UPDATE_SIZE_UNKNOWN)) otaError = Update.errorString();
+  } else if (up.status == UPLOAD_FILE_WRITE) {
+    if (!otaAllowed || otaError.length()) return;
+    if (Update.write(up.buf, up.currentSize) != up.currentSize) otaError = Update.errorString();
+    uint32_t kb = up.totalSize / 1024;
+    if (kb >= otaShownKb + 64) {
+      otaShownKb = kb;
+      calNote(String(kb) + " kB received", C_TEXT);
+    }
+  } else if (up.status == UPLOAD_FILE_END) {
+    if (!otaAllowed || otaError.length()) return;
+    if (Update.end(true)) otaDone = true;
+    else otaError = Update.errorString();
+  } else if (up.status == UPLOAD_FILE_ABORTED && otaAllowed) {  // connection dropped: back to the calendar
+    otaAllowed = false;
+    Update.abort();
+    tft.fillScreen(C_BG);
+    drawAll();
+    setStatus("Update interrupted, nothing changed", true);
+  }
+}
+
+// Called once the whole upload has arrived.
+void otaFinish() {
+  if (!otaAllowed) {
+    webAuth();
+    return;
+  }
+  otaAllowed = false;
+  if (otaError.length() || !otaDone) {
+    if (otaError.isEmpty()) otaError = "No firmware file was received";
+    Update.abort();
+    Serial.println("Update failed: " + otaError);
+    web.send(400, "text/html", webPage("<p><b>Update failed:</b> " + otaError + ".</p><p>Nothing was changed. Make sure you "
+                                       "picked the file ending in <code>-update.bin</code> for your board, not the "
+                                       "USB install file.</p><p><a href='/update'>Try again</a></p>"));
+    tft.fillScreen(C_BG);
+    drawAll();
+    setStatus("Update failed, nothing changed", true);
+    return;
+  }
+  web.send(200, "text/html", webPage("<p><b>Update installed.</b> The display is restarting with its settings kept.</p>"));
+  drawMessage("Updated", {"Restarting..."});
+  delay(1500);
+  ESP.restart();
+}
+
+void startWeb() {
+  web.on("/", HTTP_GET, [] { web.send(200, "text/html", webPage("<p><a href='/update'>Update the firmware</a></p>")); });
+  web.on("/update", HTTP_GET, [] {
+    if (!webAuth()) return;
+    web.send(200, "text/html",
+             webPage("<p>Pick the file ending in <code>-update.bin</code> from the GitHub build and press Update. "
+                     "Wi-Fi, calendar and touch settings are kept.</p>"
+                     "<form method=post action='/update' enctype='multipart/form-data'>"
+                     "<input type=file name=firmware accept='.bin' required><br><button>Update</button></form>"
+                     "<p>It takes about half a minute. Don't unplug the display meanwhile.</p>"));
+  });
+  web.on("/update", HTTP_POST, otaFinish, otaUpload);
+  web.begin();
+  if (MDNS.begin(MDNS_NAME)) MDNS.addService("http", "tcp", 80);
+  webStarted = true;
+  Serial.println("Update page: http://" + WiFi.localIP().toString() + "/update");
+}
+
+void stopWeb() {
+  if (!webStarted) return;
+  web.stop();
+  MDNS.end();
+  webStarted = false;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1321,6 +1440,12 @@ void setup() {
     delay(100);
   }
 
+  if (WiFi.status() == WL_CONNECTED) {  // say where the update page is
+    drawMessage("Calendar", {"Connected. To update later, browse to:",
+                             ">http://" + WiFi.localIP().toString() + "/update"});
+    delay(2500);
+  }
+
   tft.fillScreen(C_BG);
   drawAll();
   fetchCalendar();
@@ -1330,6 +1455,8 @@ void setup() {
 
 void loop() {
   handleTouch();
+  if (webStarted) web.handleClient();
+  else if (WiFi.status() == WL_CONNECTED) startWeb();
   keepWifiUp();
   uint32_t ms = millis();
 
