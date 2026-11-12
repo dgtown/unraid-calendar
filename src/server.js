@@ -11,7 +11,7 @@ const { describeEvent } = require('./format');
 const recur = require('./recur');
 const { startReminders } = require('./reminders');
 const { createLimiter } = require('./limiter');
-const { buildDisplay } = require('./display');
+const { buildDisplay, buildMonth, monthRange, parseDay } = require('./display');
 
 const app = express();
 app.disable('x-powered-by');
@@ -60,15 +60,30 @@ router.get('/calendar.ics', (req, res) => {
   res.type('text/calendar; charset=utf-8').send(toICS(store.allEvents()));
 });
 
-// Compact agenda for the Cheap Yellow Display (see display/README.md). ?days=1..14, default 7.
+// Compact agenda for the Cheap Yellow Display (see display/README.md).
+// ?days=1..14 (default 7), ?start=YYYY-MM-DD (default today). Also includes the current month's grid.
 router.get('/api/display', (req, res) => {
   if (!tokenOk(req, res, '{"error":"Set FEED_TOKEN and add ?token=... to the URL."}')) return;
   const days = Math.min(14, Math.max(1, parseInt(req.query.days, 10) || 7));
   const now = Date.now();
   const d = new Date(now);
-  const from = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
-  const to = new Date(d.getFullYear(), d.getMonth(), d.getDate() + days).getTime();
-  res.set('Cache-Control', 'no-store').json(buildDisplay(store.eventsInRange(from, to), now, days));
+  const first = parseDay(req.query.start) || new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  const from = first.getTime();
+  const to = new Date(first.getFullYear(), first.getMonth(), first.getDate() + days).getTime();
+  const out = buildDisplay(store.eventsInRange(from, to), now, days, 30, first);
+  const y = d.getFullYear(), m = d.getMonth() + 1;
+  out.month = buildMonth(store.eventsInRange(...monthRange(y, m)), now, y, m);
+  res.set('Cache-Control', 'no-store').json(out);
+});
+
+// One month's grid for the display: ?ym=YYYY-MM (default this month).
+router.get('/api/display/month', (req, res) => {
+  if (!tokenOk(req, res, '{"error":"Set FEED_TOKEN and add ?token=... to the URL."}')) return;
+  const now = Date.now(), d = new Date(now);
+  const m = /^(\d{4})-(\d{2})$/.exec(req.query.ym || '');
+  const y = m ? +m[1] : d.getFullYear(), mo = m ? +m[2] : d.getMonth() + 1;
+  if (mo < 1 || mo > 12 || y < 1970 || y > 2200) return res.status(400).json({ error: 'Bad ym' });
+  res.set('Cache-Control', 'no-store').json(buildMonth(store.eventsInRange(...monthRange(y, mo)), now, y, mo));
 });
 
 // Optional instant delivery: voip.ms "SMS URL Callback" pointed at

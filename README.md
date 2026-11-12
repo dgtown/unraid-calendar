@@ -108,7 +108,8 @@ Prefer compose? Use `docker-compose.yml` with the Compose Manager plugin.
 
 `display/` has firmware for the ESP32 "Cheap Yellow Display" (ESP32-2432S028R) that shows the next few
 days of the calendar. It reads `/api/display?token=<FEED_TOKEN>`, a small JSON agenda with times already
-formatted in the app's time zone (`&days=1..14`, default 7). See [display/README.md](display/README.md).
+formatted in the app's time zone (`&days=1..14`, default 7; `&start=YYYY-MM-DD`), plus the current month's
+event count per day. `/api/display/month?ym=YYYY-MM&token=...` returns other months. See [display/README.md](display/README.md).
 
 ## Behind a reverse proxy
 

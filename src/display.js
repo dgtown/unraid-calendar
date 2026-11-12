@@ -30,19 +30,32 @@ function ascii(s, max = 120) {
 
 const time = ts => ascii(timeFmt.format(new Date(ts)));
 
+const midnight = d => new Date(d.getFullYear(), d.getMonth(), d.getDate());
+
+// "2026-11-12" -> local midnight Date, or null.
+function parseDay(v) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(v || '');
+  if (!m) return null;
+  const d = new Date(+m[1], +m[2] - 1, +m[3]);
+  return Number.isNaN(d.getTime()) || d.getDate() !== +m[3] ? null : d;
+}
+
 /**
  * @param {Array} events  rows from store.eventsInRange (repeating events already expanded)
  * @param {number} now    epoch ms
- * @param {number} days   how many days, starting today
+ * @param {number} days   how many days
+ * @param {Date} [first]  first day (local midnight); default today
  */
-function buildDisplay(events, now, days = 7, maxPerDay = 30) {
+function buildDisplay(events, now, days = 7, maxPerDay = 30, first = null) {
   const today = new Date(now);
-  const start = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+  const todayStart = midnight(today).getTime();
+  const start = first || midnight(today);
   const out = [];
   for (let i = 0; i < days; i++) {
     const day = addDays(start, i);
     const from = day.getTime(), to = addDays(start, i + 1).getTime();
-    const label = i === 0 ? 'Today' : i === 1 ? 'Tomorrow' : WEEKDAYS[day.getDay()];
+    const rel = Math.round((from - todayStart) / 86400000);
+    const label = rel === 0 ? 'Today' : rel === 1 ? 'Tomorrow' : rel === -1 ? 'Yesterday' : WEEKDAYS[day.getDay()];
     const list = events
       .filter(e => e.start_ts < to && e.end_ts > from)
       .sort((a, b) => (b.all_day - a.all_day) || a.start_ts - b.start_ts)
@@ -78,4 +91,32 @@ function buildDisplay(events, now, days = 7, maxPerDay = 30) {
   };
 }
 
-module.exports = { buildDisplay, ascii };
+/**
+ * One month for a calendar grid: how many events touch each day.
+ * @param {Array} events  rows from store.eventsInRange for the month
+ * @param {number} year
+ * @param {number} month  1-12
+ */
+function buildMonth(events, now, year, month) {
+  const first = new Date(year, month - 1, 1);
+  const daysInMonth = new Date(year, month, 0).getDate();
+  const counts = [];
+  for (let d = 1; d <= daysInMonth; d++) {
+    const from = new Date(year, month - 1, d).getTime(), to = new Date(year, month - 1, d + 1).getTime();
+    counts.push(events.filter(e => e.start_ts < to && e.end_ts > from).length);
+  }
+  const today = new Date(now);
+  return {
+    year, month,
+    title: `${MONTHS_LONG[month - 1]} ${year}`,
+    firstWeekday: first.getDay(), // 0 = Sunday
+    days: daysInMonth,
+    today: today.getFullYear() === year && today.getMonth() === month - 1 ? today.getDate() : 0,
+    counts,
+  };
+}
+
+// Range of a month as [from, to) epoch ms.
+const monthRange = (year, month) => [new Date(year, month - 1, 1).getTime(), new Date(year, month, 1).getTime()];
+
+module.exports = { buildDisplay, buildMonth, monthRange, parseDay, ascii };
