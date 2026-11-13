@@ -6,6 +6,18 @@
 //   - list: tap the right/left half (or swipe) for the next/previous page
 //   - month: swipe for the next/previous month, tap a day to see its events (top bar goes back)
 // Hold the screen for 5 seconds, then let go, to open the setup portal.
+//
+// Start-up and setup flow (display/SETUP_FLOW.md has the long version with diagrams):
+//   1. loadSettings()     read everything saved in flash (NVS namespace "cal"); fresh board = defaults
+//   2. screen + touch     start the panel, then calibrateTouch() if no calibration is saved yet (or the
+//                         picture was flipped since): tap 4 corners + 1 check in the middle
+//   3. runPortal()        only if no calendar address is saved (first start). The display becomes a
+//                         Wi-Fi hotspot "Calendar-Setup" (password "calendar") with a setup page; the
+//                         phone fills in Wi-Fi + calendar settings, they're saved, and the board restarts
+//   4. connect            WiFi.begin() with the network the ESP32 itself remembered, wait up to 15 s
+//   5. loop()             show the calendar; keepWifiUp() retries every 30 s for as long as it takes.
+//                         Holding the screen 5 s and letting go reopens the portal (step 3) on purpose.
+// A Wi-Fi network that is slow to come back (power cut) never sends the display back into setup.
 
 #include <algorithm>
 #include <Arduino.h>
@@ -62,8 +74,13 @@ SPIClass touchSpi(VSPI);
 struct TS_Point {
   int16_t x = 0, y = 0, z = 0;
 };
+// Settings live in the ESP32's NVS flash (a small key/value store that survives power cuts and
+// firmware updates over Wi-Fi). Everything of ours is in the namespace "cal"; the Wi-Fi network
+// and password are NOT kept here, the ESP32's Wi-Fi driver stores those itself (see savedSsid()).
+// Flashing the full "factory" .bin over USB at 0x0 wipes both.
 Preferences prefs;
 
+// What the setup page asks for. An empty url means "never set up" and makes setup() open the portal.
 struct Settings {
   String url, token;
   int days = 7, refreshMin = 5;
@@ -71,8 +88,9 @@ struct Settings {
   bool flip = false, invert = false;
 } cfg;
 
-// Touch calibration: raw touch readings at the left/right and top/bottom screen edges. Made by
-// tapping three targets on first start (touch panels differ between boards, some are mirrored).
+// Touch calibration: how raw touch-chip readings (0-4095) turn into screen pixels. Made by tapping
+// five crosses on first start, because touch panels differ between boards (some are mirrored, turned
+// or slanted). Saved with the settings; `ok` false means "ask for the taps on the next start".
 struct TouchCal {
   bool ok = false, flip = false;  // flip: the screen rotation it was made for
   // screen x = ax * rawX + bx * rawY + cx, and the same for y. Covers panels that are mirrored,
@@ -145,6 +163,13 @@ int localHour() {
 
 // ---------------------------------------------------------------------------------------------
 // Settings
+//
+// Keys in NVS namespace "cal" (keys are at most 15 characters):
+//   url, token, days, refresh, dimFrom, dimTo, dimLevel, flip, invert   - from the setup page
+//   view                                                                 - list or month, last used
+//   t2Ok, t2Flip, t2ax..t2cy                                             - touch calibration
+// The second argument of get*() is the default used on a fresh board, so a missing key is harmless.
+// begin(.., true) opens read-only; always end() so the next begin() works.
 // ---------------------------------------------------------------------------------------------
 void loadSettings() {
   prefs.begin("cal", true);
@@ -847,13 +872,25 @@ void showSetupScreen(WiFiManager *) {
 
 // Shows the setup portal, saves what was entered and restarts. Only opened on first start (nothing
 // saved yet) or when someone holds the screen: a Wi-Fi that's slow to come back never opens it.
+//
+// How it works: WiFiManager turns the ESP32 into a Wi-Fi hotspot (AP_NAME / AP_PASS) and runs a small
+// web server plus a DNS server that answers every name with 192.168.4.1. Phones notice that "the
+// internet" is a login page and pop it up by themselves (a captive portal), like hotel Wi-Fi. The page
+// has the standard network picker; the WiFiManagerParameter fields below are added to it. When the
+// person taps Save, WiFiManager tries the network (it saves it in the ESP32's Wi-Fi memory itself),
+// calls our save callback, and startConfigPortal() returns. We then copy the fields into cfg, check
+// them, store them in NVS and restart, so the next start is a normal one with everything in place.
+// If nobody saves within 10 minutes the portal gives up and the board restarts with what it had.
 void stopWeb();
 
 void runPortal(const char *why) {
   stopWeb();  // the setup page needs port 80
-  setupReason = why;
+  setupReason = why;  // e.g. "first start..." - drawn small on the setup screen, handy for support
   Serial.printf("Opening setup: %s\n", why);
   WiFiManager wm;
+  // Each field is (id, label, current value, max length[, extra HTML attributes, label position]).
+  // The current values are filled in, so reopening setup shows what's saved and Save keeps it.
+  // The plain text ones (hdr, hdr2) are just headings on the page.
   String days = String(cfg.days), refresh = String(cfg.refreshMin);
   String dimFrom = String(cfg.dimFrom), dimTo = String(cfg.dimTo), dimLevel = String(cfg.dimLevel);
   WiFiManagerParameter hdr("<hr><h3>Calendar</h3>");
@@ -865,6 +902,8 @@ void runPortal(const char *why) {
   WiFiManagerParameter pDimFrom("dimfrom", "Dim at night from hour (0-23)", dimFrom.c_str(), 2);
   WiFiManagerParameter pDimTo("dimto", "until hour (same hour = never dim)", dimTo.c_str(), 2);
   WiFiManagerParameter pDimLevel("dimlevel", "Night brightness % (0 = off, touch to wake)", dimLevel.c_str(), 3);
+  // Checkboxes: WiFiManager only knows text boxes, so type="checkbox" is passed as extra HTML. A ticked
+  // box sends "1"; an unticked one sends nothing, so getValue() is then "" (not the default "1").
   WiFiManagerParameter pFlip("flip", "Turn the picture upside down", "1", 2,
                              cfg.flip ? "type=\"checkbox\" checked" : "type=\"checkbox\"", WFM_LABEL_AFTER);
   WiFiManagerParameter pInvert("invert", "Invert colours (if they look like a photo negative)", "1", 2,
@@ -877,15 +916,17 @@ void runPortal(const char *why) {
 
   settingsSaved = false;
   wm.setTitle("Calendar display");
-  std::vector<const char *> menu = {"wifi", "exit"};
+  std::vector<const char *> menu = {"wifi", "exit"};  // only "Configure WiFi" and "Exit" on the start page
   wm.setMenu(menu);
-  wm.setSaveParamsCallback([] { settingsSaved = true; });
-  wm.setBreakAfterConfig(true);  // keep the settings even if the Wi-Fi password was wrong
-  wm.setAPCallback(showSetupScreen);
-  wm.setConnectTimeout(20);
-  wm.setConfigPortalTimeout(600);
-  wm.startConfigPortal(AP_NAME, AP_PASS);
+  wm.setSaveParamsCallback([] { settingsSaved = true; });  // just a flag; the values are read below
+  wm.setBreakAfterConfig(true);  // return after Save even if the Wi-Fi password was wrong, so the
+                                 // calendar settings are kept (otherwise the person types them again)
+  wm.setAPCallback(showSetupScreen);  // the hotspot is up: put the instructions on the screen
+  wm.setConnectTimeout(20);           // how long Save waits to join the chosen network
+  wm.setConfigPortalTimeout(600);     // nobody finished within 10 minutes: give up and restart
+  wm.startConfigPortal(AP_NAME, AP_PASS);  // blocks here until Save, Exit or the timeout
   if (settingsSaved) {
+    // Read the fields back, tidy them up and clamp numbers to sane ranges before storing.
     cfg.url = pUrl.getValue();
     cfg.url.trim();
     cfg.token = pToken.getValue();
@@ -898,17 +939,21 @@ void runPortal(const char *why) {
     cfg.flip = strcmp(pFlip.getValue(), "1") == 0;
     cfg.invert = strcmp(pInvert.getValue(), "1") == 0;
     saveSettings();
-    if (strcmp(pRecal.getValue(), "1") == 0) {
+    if (strcmp(pRecal.getValue(), "1") == 0) {  // forget the calibration: the taps are asked for on restart
       tcal.ok = false;
       saveTouchCal();
     }
   }
+  // Always restart, saved or not: it's the simplest way back to a clean normal start (the portal
+  // leaves the Wi-Fi radio in hotspot mode, and the new screen/touch settings apply from the top).
   drawMessage(settingsSaved ? "Saved" : "Restarting", {"Starting the calendar..."});
   delay(1200);
   ESP.restart();
 }
 
-// Saved Wi-Fi network name, or "" if none.
+// Saved Wi-Fi network name, or "" if none. The ESP32's Wi-Fi driver keeps the last network it joined
+// (name + password) in its own NVS area, and WiFi.begin() with no arguments reconnects to it. That is
+// why the firmware never stores the Wi-Fi password itself. Needs WiFi.mode() to have been called.
 String savedSsid() {
   wifi_config_t conf;
   if (esp_wifi_get_config(WIFI_IF_STA, &conf) != ESP_OK) return "";
@@ -916,6 +961,9 @@ String savedSsid() {
 }
 
 // Keep trying the saved network in the background (routers can take minutes after a power cut).
+// Called every loop(); does nothing while connected, otherwise a fresh attempt every 30 seconds.
+// An earlier version let WiFiManager handle a failed connect at start-up, and it opened the setup
+// hotspot instead, which looked like the display had "forgotten" the Wi-Fi after a power cut.
 uint32_t lastWifiTryMs = 0;
 void keepWifiUp() {
   if (WiFi.status() == WL_CONNECTED || millis() - lastWifiTryMs < 30000) return;
@@ -1245,10 +1293,14 @@ void onSwipe(int dir) {
 
 // Setup opens when the screen is held for 5 seconds and then let go. A reading that never lets go
 // (a stuck or faulty touch panel) can't open it.
+//   held < 5 s           -> tap or swipe when released
+//   held 5-15 s, release -> setup portal ("Let go: setup" shows in the footer at 5 s)
+//   held > 15 s          -> treated as a stuck reading and ignored, so a faulty panel can't trap the
+//                           display in setup
 void handleTouch() {
   int x, y;
   uint32_t ms = millis();
-  if (ms < 5000) return;  // let the touch controller settle after power-up
+  if (ms < 5000) return;  // let the touch controller settle after power-up (it can report phantom presses)
   if (readTouch(x, y)) {
     touchSeenMs = ms;
     if (!touchDown) {
@@ -1405,8 +1457,9 @@ void setup() {
     pinMode(pin, OUTPUT);
     digitalWrite(pin, HIGH);
   }
-  loadSettings();
+  loadSettings();  // 1. everything saved in flash (defaults on a fresh board)
 
+  // 2. Screen, then touch. Rotation and colour inversion come from the saved settings.
   tft.init();
   tft.setRotation(cfg.flip ? 3 : 1);
   tft.invertDisplay(cfg.invert);
@@ -1422,18 +1475,26 @@ void setup() {
   pinMode(TOUCH_IRQ, INPUT);
   TS_Point warmUp;
   touchMeasure(warmUp);  // leaves the chip powered down with its pen-down line enabled
+  // Touch calibration runs before the Wi-Fi portal on a first start: nothing else needs touch yet,
+  // and the setup page is on the phone. Flipping the picture in setup also makes it run again.
   if (!tcal.ok || tcal.flip != cfg.flip) {
     delay(300);  // let the touch controller settle after power-up
-    calibrateTouch();
+    calibrateTouch();  // saves on success; if skipped (no taps for 90 s) it asks again next start
   }
 
+  // 3. Wi-Fi. WIFI_STA = join a network as a normal device (not a hotspot). Auto-reconnect lets the
+  // driver rejoin by itself after a short drop; keepWifiUp() covers the long ones.
   WiFi.mode(WIFI_STA);
   WiFi.setAutoReconnect(true);
   String ssid = savedSsid();
   Serial.printf("Calendar: url=%s, saved Wi-Fi=%s\n", cfg.url.c_str(), ssid.c_str());
   // Setup opens by itself only on first start. Later, hold the screen 5 seconds and let go.
+  // It deliberately checks the calendar address, not whether Wi-Fi is saved or connects: a missing
+  // router after a power cut must never look like "not set up".
   if (cfg.url.isEmpty()) runPortal("first start: no calendar address saved yet");  // restarts when done
 
+  // 4. Join the saved network. Give it 15 s here so the first fetch usually works; if not, the
+  // display starts anyway and keeps retrying in loop().
   drawMessage("Calendar", {"Connecting to Wi-Fi", String(">") + (ssid.length() ? ssid : String("(saved network)"))});
   WiFi.begin();
   lastWifiTryMs = millis();
@@ -1454,10 +1515,11 @@ void setup() {
   nextFetchInMs = (statusIsError ? 1 : cfg.refreshMin) * 60000UL;
 }
 
+// 5. Normal running. Nothing here blocks for long, so touches stay responsive.
 void loop() {
-  handleTouch();
+  handleTouch();  // may open the setup portal (5 s hold), which restarts the board
   if (webStarted) web.handleClient();
-  else if (WiFi.status() == WL_CONNECTED) startWeb();
+  else if (WiFi.status() == WL_CONNECTED) startWeb();  // update page, once there's a network
   keepWifiUp();
   uint32_t ms = millis();
 

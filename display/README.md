@@ -14,6 +14,8 @@ next few days of your calendar, refreshing every few minutes over Wi-Fi.
 - Dims at night (10pm-7am by default); a tap lights it up for 30 seconds
 - Everything is set up from your phone, no code changes needed
 
+How the phone and touchscreen setup works under the hood (and how to reuse it): [SETUP_FLOW.md](SETUP_FLOW.md).
+
 ## 1. Turn on the display feed in the calendar app
 
 The display reads `/api/display?token=...`, which uses the same `FEED_TOKEN` as the phone feed.
