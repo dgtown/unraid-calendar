@@ -19,6 +19,8 @@ services:
       ALLOWED_NUMBERS: ""             # who may text it, comma separated, e.g. 5559876543
       VOIPMS_POLL_SECONDS: "30"
       DAILY_AGENDA_TIME: "07:00"      # morning agenda text, or "off"
+      ICAL_IMPORT_URLS: ""            # Google Calendar "Secret address in iCal format" (read only), comma separated
+      # ICAL_IMPORT_MINUTES: "15"     # how often to re-read it
       # Reverse proxy (optional):
       # BASE_PATH: "/calendar"        # only if served under a sub-path
       # TRUST_PROXY: ""               # default trusts local/private proxies; "off" to ignore X-Forwarded-*

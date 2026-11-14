@@ -39,11 +39,15 @@
   form.elements.allDay.addEventListener('change', e => setAllDayInputs(e.target.checked));
 
   function openEditor(ev) {
-    editingId = ev && ev.id ? ev.id : null;
+    const readOnly = Boolean(ev?.extendedProps?.readOnly);
+    editingId = ev && ev.id && !readOnly ? ev.id : null;
     editingOcc = ev?.extendedProps?.repeat ? ev.extendedProps.occurrence : null;
-    $('#event-dialog-title').textContent = editingId ? 'Edit event' : 'New event';
+    $('#event-dialog-title').textContent = readOnly ? (ev.extendedProps.calendar || 'Imported event') : editingId ? 'Edit event' : 'New event';
     $('#delete-btn').hidden = !editingId;
+    $('#save-btn').hidden = readOnly;
     form.reset();
+    for (const el of form.elements) if (el.tagName !== 'BUTTON') el.disabled = readOnly;
+    for (const name of ['repeat', 'reminderMin']) form.elements[name].closest('label').hidden = readOnly;
     const allDay = Boolean(ev && ev.allDay);
     form.elements.title.value = ev?.extendedProps?.plainTitle || ev?.title || '';
     form.elements.allDay.checked = allDay;
@@ -61,8 +65,9 @@
     }
     form.elements.repeat.value = ev?.extendedProps?.repeat || '';
     const note = $('#repeat-note');
-    note.hidden = !editingOcc;
-    note.textContent = editingOcc ? `Repeats ${ev.extendedProps.repeatText}. Changes here apply to all of them.` : '';
+    note.hidden = !editingOcc && !readOnly;
+    note.textContent = readOnly ? `From ${ev.extendedProps.calendar || 'an imported calendar'} (read only). Change it there and it updates here within about 15 minutes.`
+      : editingOcc ? `Repeats ${ev.extendedProps.repeatText}. Changes here apply to all of them.` : '';
     form.elements.location.value = ev?.extendedProps?.location || '';
     form.elements.notes.value = ev?.extendedProps?.notes || '';
     const r = ev?.extendedProps?.reminderMin;
@@ -151,6 +156,9 @@
         <p><b>Phone subscription feed:</b> ${s.feed
           ? `<code>${esc(new URL('calendar.ics', location.href).href.split('?')[0])}?token=YOUR_FEED_TOKEN</code>`
           : 'off (set FEED_TOKEN in the container)'}</p>
+        <p><b>Imported calendars:</b> ${s.imports.length ? s.imports.map(c =>
+          `<br>${esc(c.name)}: ${c.events} events, updated ${esc(when(c.lastOk))}${c.error ? ` <b style="color:var(--danger)">Error:</b> ${esc(c.error)}` : ''}`).join('')
+          : 'none (paste your Google Calendar secret iCal address into ICAL_IMPORT_URLS in the container settings)'}</p>
         <p><b>Backups:</b> ${s.backups.length ? `${s.backups.length} nightly copies in appdata/backups, newest ${esc(s.backups[s.backups.length - 1])}` : 'none yet'}</p>
         <p><b>Recent texts</b></p>
         <div class="sms-log">${s.recentSms.length ? s.recentSms.map(m =>
@@ -175,9 +183,11 @@
     dayMaxEvents: true,
     events: 'api/events',
     eventDataTransform: e => ({
-      ...e, title: e.repeat ? `↻ ${e.title}` : e.title, editable: !e.repeat, // drag/resize only for one-off events
+      ...e, title: e.repeat || e.recurring ? `↻ ${e.title}` : e.title,
+      editable: !e.repeat && !e.readOnly, // drag/resize only for our own one-off events
+      classNames: e.readOnly ? ['imported'] : [],
       extendedProps: { location: e.location, notes: e.notes, reminderMin: e.reminderMin, repeat: e.repeat,
-        repeatText: e.repeatText, occurrence: e.occurrence, plainTitle: e.title },
+        repeatText: e.repeatText, occurrence: e.occurrence, plainTitle: e.title, readOnly: e.readOnly, calendar: e.calendar },
     }),
     eventClick: info => { info.jsEvent.preventDefault(); openEditor(info.event); },
     select: info => {

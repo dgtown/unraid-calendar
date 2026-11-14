@@ -71,7 +71,7 @@ function buildDisplay(events, now, days = 7, maxPerDay = 30, first = null) {
           end: allDay ? '' : endsToday ? time(e.end_ts) : '',
           start: Math.floor(e.start_ts / 1000),
           stop: Math.floor(e.end_ts / 1000),
-          repeats: Boolean(e.rrule),
+          repeats: Boolean(e.rrule || e.recurring),
         };
       });
     out.push({

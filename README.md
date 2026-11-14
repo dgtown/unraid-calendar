@@ -5,6 +5,7 @@ A small self-hosted calendar that runs as one Docker container on Unraid.
 - **Add events by text message** through your voip.ms number: `Dentist tue 3pm`, `Sam's party Sat 2-5 @ 12 Oak St remind 1h`.
 - **Web page** that works on desktop and phone (Android: Chrome → "Add to Home screen").
 - **Phone calendar subscription** (`.ics` feed) for Google Calendar, Samsung Calendar (via ICSx⁵) or iPhone.
+- **Shows your Google Calendar** (read only) next to your own events, in the web page, agenda texts and desk display.
 - **Text reminders** before events, plus a **morning agenda text** every day at 7:00 AM.
 - Everything is stored in one SQLite file in `/mnt/user/appdata/calendar`.
 
@@ -85,6 +86,8 @@ Prefer compose? Use `docker-compose.yml` with the Compose Manager plugin.
 | `VOIPMS_DID` | Your voip.ms number (digits). |
 | `ALLOWED_NUMBERS` | Comma-separated numbers allowed to text it. |
 | `DAILY_AGENDA_TIME` | When to text the day's agenda (default `07:00`; `off` to disable). Texting `DAILY ...` overrides it. |
+| `ICAL_IMPORT_URLS` | Google Calendar's *Secret address in iCal format* (or any iCal link) to show read-only. Several: comma separated; optional label `Work=https://...`. See [Showing your Google Calendar](#showing-your-google-calendar). |
+| `ICAL_IMPORT_MINUTES` | How often to re-read those links (default 15). |
 | `VOIPMS_POLL_SECONDS` | How often to check for texts (default 30). |
 | `DEFAULT_DURATION_MIN` | Length of events with no end time (default 60). |
 | `BASE_PATH` | Serve the app under a sub-path such as `/calendar` (default: the root). |
@@ -103,6 +106,31 @@ Prefer compose? Use `docker-compose.yml` with the Compose Manager plugin.
   subscription feed above if you want it to keep updating.
 - **Away from home:** use a reverse proxy (see below), or install the Tailscale plugin on Unraid and the Tailscale app on your phone, then use the
   Tailscale address instead of the LAN IP. Texting works from anywhere without this.
+
+## Showing your Google Calendar
+
+The app can read your Google Calendar and show those events next to its own, in green. They also appear in the
+`today` / `week` agenda texts, the morning agenda, overlap warnings and on the desk display. They are read only
+here: change them in Google Calendar, and the app picks the change up within 15 minutes.
+
+1. On a computer, open [Google Calendar](https://calendar.google.com) → ⚙ → **Settings**.
+2. On the left, under **Settings for my calendars**, click your calendar (usually your name) → **Integrate calendar**.
+3. Copy **Secret address in iCal format** (it ends in `/basic.ics`). Keep it private: anyone with it can read the calendar.
+4. On Unraid: **Docker →** calendar → **Edit**, paste it into **Google Calendar address** (`ICAL_IMPORT_URLS`), **Apply**.
+   If that field isn't there (older template), click **Add another Path, Port, Variable, Label or Device**, choose
+   *Variable*, set Key to `ICAL_IMPORT_URLS` and Value to the address.
+5. Open ⚙ in the web app: **Imported calendars** shows how many events were read, or the error.
+
+More than one calendar (a shared family calendar, for example): repeat steps 2–3 for each and separate the addresses
+with commas. Add a label with `Family=https://...` to name it in the app.
+
+Notes:
+- Google can take a while (sometimes hours) to update the secret address after you change an event; that delay is on Google's side.
+- If you have also subscribed Google Calendar to this app's own feed, those events live in a separate Google calendar
+  and aren't in the secret address of your main one, so nothing doubles up. Events copied into Google with
+  **⬇ Download** are recognised and shown once.
+- Imported events are not added to this app's `/calendar.ics` feed or Download file.
+- The last copy is kept in `appdata/calendar/imports`, so events still show after a restart while Google is unreachable.
 
 ## On a desk display
 
