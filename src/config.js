@@ -57,6 +57,20 @@ const int = (v, d) => { const n = parseInt(v, 10); return Number.isFinite(n) && 
 config.loginMaxAttempts = int(process.env.LOGIN_MAX_ATTEMPTS, 10);
 config.loginLockoutMin = int(process.env.LOGIN_LOCKOUT_MIN, 15) || 15;
 
+// Read-only calendars to show alongside your own, e.g. Google Calendar's
+// "Secret address in iCal format". Several are separated by commas, spaces or new lines.
+// Optional label: "Work=https://...". webcal:// links work too.
+function importFeeds(v) {
+  return String(v || '').split(/[\s,]+/).filter(Boolean).map(item => {
+    const m = /^(?:([^=]*?)=)?((?:https?|webcal):\/\/.+)$/i.exec(item);
+    if (!m) { console.error(`ICAL_IMPORT_URLS: ignoring "${item.slice(0, 20)}..." (not a web address)`); return null; }
+    return { name: (m[1] || '').trim(), url: m[2].replace(/^webcal:/i, 'https:') };
+  }).filter(Boolean);
+}
+config.importFeeds = importFeeds(process.env.ICAL_IMPORT_URLS || process.env.GOOGLE_CALENDAR_URL);
+config.importMinutes = int(process.env.ICAL_IMPORT_MINUTES, 15) || 15;
+
 config.smsEnabled = Boolean(config.voipms.user && config.voipms.password && config.voipms.did);
 
+config._importFeeds = importFeeds;
 module.exports = config;

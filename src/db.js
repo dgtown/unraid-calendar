@@ -5,6 +5,7 @@ const crypto = require('crypto');
 const Database = require('better-sqlite3');
 const config = require('./config');
 const recur = require('./recur');
+const feeds = require('./feeds');
 
 fs.mkdirSync(config.dataDir, { recursive: true });
 const db = new Database(path.join(config.dataDir, 'calendar.db'));
@@ -87,11 +88,25 @@ function restoreEvent(row) {
 const getEvent = id => db.prepare('SELECT * FROM events WHERE id = ?').get(id);
 const deleteEvent = id => db.prepare('DELETE FROM events WHERE id = ?').run(id).changes > 0;
 // One row per occurrence: repeating events are expanded into the window.
-function eventsInRange(from, to) {
+// Includes read-only events from imported calendars (Google Calendar etc.) unless ownOnly.
+function eventsInRange(from, to, { ownOnly = false } = {}) {
   const single = db.prepare('SELECT * FROM events WHERE rrule IS NULL AND start_ts < ? AND end_ts > ?').all(to, from);
   const series = db.prepare('SELECT * FROM events WHERE rrule IS NOT NULL AND start_ts < ?').all(to);
   const occ = series.flatMap(ev => recur.occurrences(ev, from, to).map(t => recur.occurrence(ev, t)));
-  return single.concat(occ).sort((a, b) => a.start_ts - b.start_ts || a.id - b.id);
+  // Skip imported copies of our own events (e.g. after "Download" was imported into Google Calendar).
+  const own = single.concat(occ);
+  const key = e => `${e.all_day ? 1 : 0}|${e.start_ts}|${String(e.title).trim().toLowerCase()}`;
+  const ownKeys = new Set(own.map(key));
+  const ext = ownOnly ? [] : feeds.inRange(from, to).filter(e => !ownKeys.has(key(e)) && !isOwnUid(e.uid));
+  return single.concat(occ, ext).sort((a, b) => a.start_ts - b.start_ts || String(a.id).localeCompare(String(b.id), 'en', { numeric: true }));
+}
+const ownUids = { at: 0, set: new Set() };
+function isOwnUid(uid) {
+  if (Date.now() - ownUids.at > 60000) {
+    ownUids.set = new Set(db.prepare('SELECT uid FROM events').pluck().all());
+    ownUids.at = Date.now();
+  }
+  return ownUids.set.has(uid);
 }
 const allEvents = () => db.prepare('SELECT * FROM events ORDER BY start_ts').all();
 const findUpcomingByTitle = (q, now) =>

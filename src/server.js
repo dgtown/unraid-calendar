@@ -11,6 +11,7 @@ const { describeEvent } = require('./format');
 const recur = require('./recur');
 const { startReminders } = require('./reminders');
 const { createLimiter } = require('./limiter');
+const feeds = require('./feeds');
 const { buildDisplay, buildMonth, monthRange, parseDay } = require('./display');
 
 const app = express();
@@ -123,6 +124,7 @@ function toApi(e) {
     location: e.location, notes: e.notes, reminderMin: e.reminder_min, source: e.source,
     repeat: recur.ruleOf(e)?.freq || null, repeatText: e.rrule ? recur.describeRule(e) : null,
     occurrence: e.occ_ts ?? null,
+    ...(e.readonly ? { readOnly: true, calendar: e.calendar, recurring: e.recurring } : {}),
   };
 }
 
@@ -229,6 +231,7 @@ router.get('/api/status', (req, res) => {
     dailyAgenda: sms.dailyTime(),
     recentSms: store.recentSms(20),
     backups: store.listBackups(),
+    imports: feeds.status(),
   });
 });
 
@@ -247,6 +250,7 @@ if (require.main === module) {
     console.log(`Calendar listening on :${config.port}${config.basePath ? ` at ${config.basePath}/` : ''} (TZ ${config.tz}, data in ${config.dataDir})`);
     sms.startPolling();
     startReminders();
+    feeds.start();
   });
 }
 

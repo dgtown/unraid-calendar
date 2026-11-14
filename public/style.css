@@ -1,12 +1,12 @@
 :root {
   --bg: #ffffff; --fg: #111827; --muted: #6b7280; --line: #e5e7eb; --panel: #f9fafb;
-  --accent: #2563eb; --accent-fg: #ffffff; --danger: #dc2626; --today: #eff6ff;
+  --accent: #2563eb; --accent-fg: #ffffff; --danger: #dc2626; --today: #eff6ff; --imported: #0b8043;
   color-scheme: light;
 }
 @media (prefers-color-scheme: dark) {
   :root {
     --bg: #0f1115; --fg: #e5e7eb; --muted: #9ca3af; --line: #2a2f3a; --panel: #171a21;
-    --accent: #3b82f6; --accent-fg: #ffffff; --danger: #ef4444; --today: #172033;
+    --accent: #3b82f6; --accent-fg: #ffffff; --danger: #ef4444; --today: #172033; --imported: #33b679;
     color-scheme: dark;
   }
 }
@@ -62,3 +62,8 @@ code { background: var(--panel); border: 1px solid var(--line); border-radius: 6
   .fc .fc-toolbar-title { font-size: 1rem; }
 }
 .hint { margin: -4px 0 4px; font-size: .85em; opacity: .75; }
+
+/* Read-only events from Google Calendar (ICAL_IMPORT_URLS) */
+.fc .fc-event.imported { --fc-event-bg-color: var(--imported); --fc-event-border-color: var(--imported); cursor: default; }
+.fc .imported .fc-list-event-dot { border-color: var(--imported); }
+[hidden] { display: none !important; }
