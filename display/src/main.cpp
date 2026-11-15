@@ -69,6 +69,7 @@ struct Settings {
   int days = 7, refreshMin = 5;
   int dimFrom = 22, dimTo = 7, dimLevel = 10;  // hours (local), brightness percent
   bool flip = false, invert = false;
+  int rotateSec = 15, lingerSec = 60;  // switch day/week/month every rotateSec (0 = off); pause after a touch
 } cfg;
 
 // Touch calibration: raw touch readings at the left/right and top/bottom screen edges. Made by
@@ -105,6 +106,8 @@ Month curMonth;    // this month, sent with every agenda fetch
 Month otherMonth;  // a month browsed to with a swipe
 int monthDelta = 0;  // months away from this one (0 = curMonth)
 int detailY = 0, detailM = 0, detailD = 0;  // date shown in dayDetail
+bool dayIsToday = false;  // dayDetail is today's copy from the agenda (kept fresh), not a browsed day
+uint32_t lastRotateMs = 0;
 
 enum View : uint8_t { VIEW_AGENDA, VIEW_MONTH, VIEW_DAY };
 View view = VIEW_AGENDA;
@@ -157,6 +160,8 @@ void loadSettings() {
   cfg.dimLevel = prefs.getInt("dimLevel", 10);
   cfg.flip = prefs.getBool("flip", false);
   cfg.invert = prefs.getBool("invert", false);
+  cfg.rotateSec = prefs.getInt("rotate", 15);
+  cfg.lingerSec = prefs.getInt("linger", 60);
   view = prefs.getUChar("view", VIEW_AGENDA) == VIEW_MONTH ? VIEW_MONTH : VIEW_AGENDA;
   tcal.ok = prefs.getBool("t2Ok", false);
   if (tcal.ok) {
@@ -188,6 +193,8 @@ void saveSettings() {
   prefs.putInt("dimLevel", cfg.dimLevel);
   prefs.putBool("flip", cfg.flip);
   prefs.putBool("invert", cfg.invert);
+  prefs.putInt("rotate", cfg.rotateSec);
+  prefs.putInt("linger", cfg.lingerSec);
   prefs.end();
 }
 
@@ -752,6 +759,22 @@ Month parseMonth(JsonObject jm) {
   return m;
 }
 
+// Today's events for the day view, straight from the agenda already in memory (no fetch).
+bool loadToday() {
+  long t = localSeconds();
+  if (!haveData || days.empty() || t < 0) return false;
+  // Day number -> year/month/day (civil-from-days), so the day arrows know where they start.
+  long z = t / 86400 + 719468, era = z / 146097, doe = z - era * 146097;
+  long yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365, doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+  long mp = (5 * doy + 2) / 153;
+  detailD = doy - (153 * mp + 2) / 5 + 1;
+  detailM = mp < 10 ? mp + 3 : mp - 9;
+  detailY = yoe + era * 400 + (detailM <= 2 ? 1 : 0);
+  dayDetail.assign(1, days[0]);
+  dayIsToday = true;
+  return true;
+}
+
 // Returns true when the calendar was fetched. Redraws whatever changed.
 bool fetchCalendar() {
   JsonDocument doc;
@@ -776,7 +799,8 @@ bool fetchCalendar() {
   payloadHash = h;
   days.swap(fresh);
   haveData = true;
-  if (changed && view != VIEW_DAY && !(view == VIEW_MONTH && monthDelta != 0)) drawAll();
+  if (view == VIEW_DAY && dayIsToday) loadToday();
+  if (changed && (view != VIEW_DAY || dayIsToday) && !(view == VIEW_MONTH && monthDelta != 0)) drawAll();
   else {
     drawHeader();
     drawFooter();
@@ -819,6 +843,7 @@ bool fetchDay(int y, int m, int d) {
   if (!getJson(String("/api/display?days=1&start=") + date, doc)) return false;
   dayDetail = parseDays(doc["days"].as<JsonArray>());
   detailY = y, detailM = m, detailD = d;
+  dayIsToday = false;
   setStatus("", false);
   return !dayDetail.empty();
 }
@@ -856,6 +881,7 @@ void runPortal(const char *why) {
   WiFiManager wm;
   String days = String(cfg.days), refresh = String(cfg.refreshMin);
   String dimFrom = String(cfg.dimFrom), dimTo = String(cfg.dimTo), dimLevel = String(cfg.dimLevel);
+  String rotate = String(cfg.rotateSec), linger = String(cfg.lingerSec);
   WiFiManagerParameter hdr("<hr><h3>Calendar</h3>");
   WiFiManagerParameter pUrl("url", "Calendar address, e.g. http://192.168.1.20:8080", cfg.url.c_str(), 120);
   WiFiManagerParameter pToken("token", "FEED_TOKEN from the calendar app's settings", cfg.token.c_str(), 100);
@@ -871,8 +897,11 @@ void runPortal(const char *why) {
                                cfg.invert ? "type=\"checkbox\" checked" : "type=\"checkbox\"", WFM_LABEL_AFTER);
   WiFiManagerParameter pRecal("recal", "Redo touch calibration (if taps land in the wrong place)", "1", 2,
                               "type=\"checkbox\"", WFM_LABEL_AFTER);
-  for (WiFiManagerParameter *p : {&hdr, &pUrl, &pToken, &pDays, &pRefresh, &hdr2, &pDimFrom, &pDimTo, &pDimLevel,
-                                  &pFlip, &pInvert, &pRecal})
+  WiFiManagerParameter pRotate("rotate", "Switch between today, week and month every N seconds (0 = don't)",
+                               rotate.c_str(), 4);
+  WiFiManagerParameter pLinger("linger", "After a touch, stay put for N seconds", linger.c_str(), 4);
+  for (WiFiManagerParameter *p : {&hdr, &pUrl, &pToken, &pDays, &pRefresh, &hdr2, &pRotate, &pLinger, &pDimFrom,
+                                  &pDimTo, &pDimLevel, &pFlip, &pInvert, &pRecal})
     wm.addParameter(p);
 
   settingsSaved = false;
@@ -897,6 +926,9 @@ void runPortal(const char *why) {
     cfg.dimLevel = clampInt(pDimLevel.getValue(), 0, 100, 10);
     cfg.flip = strcmp(pFlip.getValue(), "1") == 0;
     cfg.invert = strcmp(pInvert.getValue(), "1") == 0;
+    cfg.rotateSec = clampInt(pRotate.getValue(), 0, 3600, 15);
+    if (cfg.rotateSec > 0 && cfg.rotateSec < 5) cfg.rotateSec = 5;
+    cfg.lingerSec = clampInt(pLinger.getValue(), 5, 3600, 60);
     saveSettings();
     if (strcmp(pRecal.getValue(), "1") == 0) {
       tcal.ok = false;
@@ -1454,6 +1486,23 @@ void setup() {
   nextFetchInMs = (statusIsError ? 1 : cfg.refreshMin) * 60000UL;
 }
 
+// Hands-off cycling: today -> the week list -> the month -> today... A view with several pages
+// shows each page before moving on. Nothing is saved, so the flash memory isn't worn by it.
+void rotateView() {
+  lastRotateMs = millis();
+  bool browsing = monthDelta != 0 || (view == VIEW_DAY && !dayIsToday);  // left there by a touch
+  if (!browsing && view != VIEW_MONTH && page < pageCount - 1) {
+    turnPage(1);
+    return;
+  }
+  page = 0;
+  monthDelta = 0;
+  if (view == VIEW_DAY) view = VIEW_AGENDA;
+  else if (view == VIEW_AGENDA) view = VIEW_MONTH;
+  else view = loadToday() ? VIEW_DAY : VIEW_AGENDA;
+  drawAll();
+}
+
 void loop() {
   handleTouch();
   if (webStarted) web.handleClient();
@@ -1476,8 +1525,14 @@ void loop() {
     lastLocalDay = t / 86400;
   }
 
-  // After a minute and a half without touches, go back to the first page / this month.
-  if ((page != 0 || monthDelta != 0 || view == VIEW_DAY) && !touchDown && ms - lastTouchMs > 90000) {
+  // Left alone, cycle through the views; a touch holds the current one for a while.
+  bool dark = isNight() && millis() > wakeUntilMs && cfg.dimLevel == 0;
+  if (cfg.rotateSec > 0) {
+    if (haveData && !touchDown && !dark && ms - lastTouchMs > cfg.lingerSec * 1000UL &&
+        ms - lastRotateMs > cfg.rotateSec * 1000UL)
+      rotateView();
+  } else if ((page != 0 || monthDelta != 0 || view == VIEW_DAY) && !touchDown && ms - lastTouchMs > 90000) {
+    // Not cycling: after a minute and a half without touches, go back to the first page / this month.
     page = 0;
     monthDelta = 0;
     if (view == VIEW_DAY) view = VIEW_MONTH;

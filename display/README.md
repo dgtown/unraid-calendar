@@ -11,6 +11,8 @@ next few days of your calendar, refreshing every few minutes over Wi-Fi.
 - Month: tap the arrows at either end of the top bar (or swipe left/right) for the next/previous
   month; in a day, the arrows (or a swipe) go to the next/previous day and the middle of the top bar
   goes back to the month
+- Left alone it cycles through today, the week list and the month every 15 seconds; touching it
+  holds the current view for a minute (both times, and switching it off, are in setup)
 - Dims at night (10pm-7am by default); a tap lights it up for 30 seconds
 - Everything is set up from your phone, no code changes needed
 
