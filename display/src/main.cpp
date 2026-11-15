@@ -69,6 +69,7 @@ struct Settings {
   int days = 7, refreshMin = 5;
   int dimFrom = 22, dimTo = 7, dimLevel = 10;  // hours (local), brightness percent
   bool flip = false, invert = false;
+  int touchSens = 4;  // 1 (needs a firm press) .. 5 (very light)
   int rotateSec = 15, lingerSec = 60;  // switch day/week/month every rotateSec (0 = off); pause after a touch
 } cfg;
 
@@ -162,6 +163,7 @@ void loadSettings() {
   cfg.invert = prefs.getBool("invert", false);
   cfg.rotateSec = prefs.getInt("rotate", 15);
   cfg.lingerSec = prefs.getInt("linger", 60);
+  cfg.touchSens = constrain(prefs.getInt("tsens", 4), 1, 5);
   view = prefs.getUChar("view", VIEW_AGENDA) == VIEW_MONTH ? VIEW_MONTH : VIEW_AGENDA;
   tcal.ok = prefs.getBool("t2Ok", false);
   if (tcal.ok) {
@@ -195,6 +197,7 @@ void saveSettings() {
   prefs.putBool("invert", cfg.invert);
   prefs.putInt("rotate", cfg.rotateSec);
   prefs.putInt("linger", cfg.lingerSec);
+  prefs.putInt("tsens", cfg.touchSens);
   prefs.end();
 }
 
@@ -881,7 +884,7 @@ void runPortal(const char *why) {
   WiFiManager wm;
   String days = String(cfg.days), refresh = String(cfg.refreshMin);
   String dimFrom = String(cfg.dimFrom), dimTo = String(cfg.dimTo), dimLevel = String(cfg.dimLevel);
-  String rotate = String(cfg.rotateSec), linger = String(cfg.lingerSec);
+  String rotate = String(cfg.rotateSec), linger = String(cfg.lingerSec), sens = String(cfg.touchSens);
   WiFiManagerParameter hdr("<hr><h3>Calendar</h3>");
   WiFiManagerParameter pUrl("url", "Calendar address, e.g. http://192.168.1.20:8080", cfg.url.c_str(), 120);
   WiFiManagerParameter pToken("token", "FEED_TOKEN from the calendar app's settings", cfg.token.c_str(), 100);
@@ -900,7 +903,8 @@ void runPortal(const char *why) {
   WiFiManagerParameter pRotate("rotate", "Switch between today, week and month every N seconds (0 = don't)",
                                rotate.c_str(), 4);
   WiFiManagerParameter pLinger("linger", "After a touch, stay put for N seconds", linger.c_str(), 4);
-  for (WiFiManagerParameter *p : {&hdr, &pUrl, &pToken, &pDays, &pRefresh, &hdr2, &pRotate, &pLinger, &pDimFrom,
+  WiFiManagerParameter pSens("tsens", "Touch sensitivity: 1 (firm press) to 5 (very light)", sens.c_str(), 2);
+  for (WiFiManagerParameter *p : {&hdr, &pUrl, &pToken, &pDays, &pRefresh, &hdr2, &pRotate, &pLinger, &pSens, &pDimFrom,
                                   &pDimTo, &pDimLevel, &pFlip, &pInvert, &pRecal})
     wm.addParameter(p);
 
@@ -929,6 +933,7 @@ void runPortal(const char *why) {
     cfg.rotateSec = clampInt(pRotate.getValue(), 0, 3600, 15);
     if (cfg.rotateSec > 0 && cfg.rotateSec < 5) cfg.rotateSec = 5;
     cfg.lingerSec = clampInt(pLinger.getValue(), 5, 3600, 60);
+    cfg.touchSens = clampInt(pSens.getValue(), 1, 5, 4);
     saveSettings();
     if (strcmp(pRecal.getValue(), "1") == 0) {
       tcal.ok = false;
@@ -964,13 +969,14 @@ uint32_t touchStartMs = 0, touchSeenMs = 0;
 int touchX = 0, touchY = 0, touchLastX = 0, touchLastY = 0;
 // Readings of the touch in progress. The first and last couple are taken while the finger is still
 // landing or lifting and can be far off, so taps and swipes are worked out from the ones in between.
-static int16_t tsX[64], tsY[64], tlX[4], tlY[4];
+static int16_t tsX[64], tsY[64], tsZ[64], tlX[4], tlY[4];
 int tsN = 0;
 
-void touchSample(int x, int y) {
+void touchSample(int x, int y, int z) {
   if (tsN < 64) {
     tsX[tsN] = x;
     tsY[tsN] = y;
+    tsZ[tsN] = z;
   }
   tlX[tsN % 4] = x;
   tlY[tsN % 4] = y;
@@ -980,21 +986,28 @@ void touchSample(int x, int y) {
 // Fills in where the touch started and ended (settled readings) and where a tap was (the median).
 void touchResult(int &sx, int &sy, int &ex, int &ey, int &tx, int &ty) {
   int kept = min(tsN, 64);
-  int si = min(2, kept - 1);
+  int si = min(10, (kept - 1) / 2);  // about 25 ms in: past the landing, before any movement
   sx = tsX[si];
   sy = tsY[si];
   int ei = tsN >= 4 ? (tsN - 3) % 4 : -1;
   ex = ei >= 0 ? tlX[ei] : tsX[kept - 1];
   ey = ei >= 0 ? tlY[ei] : tsY[kept - 1];
-  if (kept >= 6) {
-    std::sort(tsX + 2, tsX + kept - 2);
-    std::sort(tsY + 2, tsY + kept - 2);
-    tx = tsX[kept / 2];
-    ty = tsY[kept / 2];
-  } else {
-    tx = tsX[kept / 2];
-    ty = tsY[kept / 2];
+  // The tap point: the firmest readings are the most accurate (a light or quick tap has only a
+  // few of them, in the middle), so take the median of those pressed at least 70% as hard as the
+  // hardest. With plenty of readings the first and last two are left out as well.
+  int from = kept >= 6 ? 2 : 0, to = kept >= 6 ? kept - 2 : kept, zMax = 0, n = 0;
+  for (int i = from; i < to; i++) zMax = max<int>(zMax, tsZ[i]);
+  static int16_t bx[64], by[64];
+  for (int i = from; i < to; i++) {
+    if (tsZ[i] * 10 < zMax * 7) continue;
+    bx[n] = tsX[i];
+    by[n] = tsY[i];
+    n++;
   }
+  std::sort(bx, bx + n);
+  std::sort(by, by + n);
+  tx = bx[n / 2];
+  ty = by[n / 2];
 }
 
 // A touch counts only if the controller's pen-down line (IRQ) is actually low and the reading is
@@ -1034,15 +1047,23 @@ void touchMeasure(TS_Point &p) {
   p.y = middleOf4(ys);
 }
 
-bool readRaw(TS_Point &p) {
+// minZ: how hard the press has to be. Calibration asks for firm presses; everyday taps use the
+// sensitivity setting.
+bool readRaw(TS_Point &p, int minZ = 400) {
   if (digitalRead(TOUCH_IRQ) != LOW) return false;
   touchMeasure(p);
-  return !(p.z < 400 || p.x < 100 || p.x > 4000 || p.y < 100 || p.y > 4000);
+  return !(p.z < minZ || p.x < 100 || p.x > 4000 || p.y < 100 || p.y > 4000);
 }
 
-bool readTouch(int &x, int &y) {
+int touchMinZ() {
+  static const int16_t levels[] = {500, 400, 300, 200, 120};
+  return levels[constrain(cfg.touchSens, 1, 5) - 1];
+}
+
+bool readTouch(int &x, int &y, int &z) {
   TS_Point p;
-  if (!readRaw(p)) return false;
+  if (!readRaw(p, touchMinZ())) return false;
+  z = p.z;
   x = constrain((int)lroundf(tcal.ax * p.x + tcal.bx * p.y + tcal.cx), 0, W - 1);
   y = constrain((int)lroundf(tcal.ay * p.x + tcal.by * p.y + tcal.cy), 0, H - 1);
   return true;
@@ -1278,20 +1299,36 @@ void onSwipe(int dir) {
 // Setup opens when the screen is held for 5 seconds and then let go. A reading that never lets go
 // (a stuck or faulty touch panel) can't open it.
 void handleTouch() {
-  int x, y;
+  int x, y, z;
   uint32_t ms = millis();
   if (ms < 5000) return;  // let the touch controller settle after power-up
-  if (readTouch(x, y)) {
-    touchSeenMs = ms;
-    if (!touchDown) {
-      touchDown = true;
-      longPressFired = false;
-      touchStartMs = ms;
+  if (!touchDown) {
+    // A quick tap can be over in a few hundredths of a second, less than one pass of the main loop.
+    // So the moment the panel reports contact, read it rapidly for 30 ms. At least three good
+    // readings are needed, which a real finger gives easily and stray noise doesn't.
+    if (digitalRead(TOUCH_IRQ) != LOW) return;
+    tsN = 0;
+    uint32_t seen = 0;
+    while (millis() - ms < 30) {
+      if (readTouch(x, y, z)) {
+        touchSample(x, y, z);
+        seen = millis();
+      }
+      delay(2);
+    }
+    if (tsN < 3) {
       tsN = 0;
-      touchSample(x, y);
       return;
     }
-    touchSample(x, y);
+    touchDown = true;
+    longPressFired = false;
+    touchStartMs = ms;
+    touchSeenMs = seen;
+    return;
+  }
+  if (readTouch(x, y, z)) {
+    touchSeenMs = ms;
+    touchSample(x, y, z);
     uint32_t held = ms - touchStartMs;
     if (!longPressFired && held > 5000) {
       longPressFired = true;
@@ -1300,7 +1337,7 @@ void handleTouch() {
     } else if (longPressFired && held > 15000) {
       setStatus("", false);  // held far too long: treat as a stuck reading, not a request
     }
-  } else if (touchDown && ms - touchSeenMs > 120) {  // released (a short gap mid-swipe doesn't count)
+  } else if (ms - touchSeenMs > 90) {  // released (a short gap mid-swipe doesn't count)
     touchDown = false;
     lastTouchMs = ms;
     uint32_t held = touchSeenMs - touchStartMs;
@@ -1540,5 +1577,5 @@ void loop() {
   }
   updateMarquees();
   updateBacklight();
-  delay(10);
+  delay(4);
 }
