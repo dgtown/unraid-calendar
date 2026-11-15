@@ -69,7 +69,7 @@ struct Settings {
   int days = 7, refreshMin = 5;
   int dimFrom = 22, dimTo = 7, dimLevel = 10;  // hours (local), brightness percent
   bool flip = false, invert = false;
-  int touchSens = 4;  // 1 (needs a firm press) .. 5 (very light)
+  int touchSens = 4;  // 1 (needs a firm press) .. 8 (lightest)
   int rotateSec = 15, lingerSec = 60;  // switch day/week/month every rotateSec (0 = off); pause after a touch
 } cfg;
 
@@ -163,7 +163,7 @@ void loadSettings() {
   cfg.invert = prefs.getBool("invert", false);
   cfg.rotateSec = prefs.getInt("rotate", 15);
   cfg.lingerSec = prefs.getInt("linger", 60);
-  cfg.touchSens = constrain(prefs.getInt("tsens", 4), 1, 5);
+  cfg.touchSens = constrain(prefs.getInt("tsens", 4), 1, 8);
   view = prefs.getUChar("view", VIEW_AGENDA) == VIEW_MONTH ? VIEW_MONTH : VIEW_AGENDA;
   tcal.ok = prefs.getBool("t2Ok", false);
   if (tcal.ok) {
@@ -903,7 +903,7 @@ void runPortal(const char *why) {
   WiFiManagerParameter pRotate("rotate", "Switch between today, week and month every N seconds (0 = don't)",
                                rotate.c_str(), 4);
   WiFiManagerParameter pLinger("linger", "After a touch, stay put for N seconds", linger.c_str(), 4);
-  WiFiManagerParameter pSens("tsens", "Touch sensitivity: 1 (firm press) to 5 (very light)", sens.c_str(), 2);
+  WiFiManagerParameter pSens("tsens", "Touch sensitivity: 1 (firm press) to 8 (lightest)", sens.c_str(), 2);
   for (WiFiManagerParameter *p : {&hdr, &pUrl, &pToken, &pDays, &pRefresh, &hdr2, &pRotate, &pLinger, &pSens, &pDimFrom,
                                   &pDimTo, &pDimLevel, &pFlip, &pInvert, &pRecal})
     wm.addParameter(p);
@@ -933,7 +933,7 @@ void runPortal(const char *why) {
     cfg.rotateSec = clampInt(pRotate.getValue(), 0, 3600, 15);
     if (cfg.rotateSec > 0 && cfg.rotateSec < 5) cfg.rotateSec = 5;
     cfg.lingerSec = clampInt(pLinger.getValue(), 5, 3600, 60);
-    cfg.touchSens = clampInt(pSens.getValue(), 1, 5, 4);
+    cfg.touchSens = clampInt(pSens.getValue(), 1, 8, 4);
     saveSettings();
     if (strcmp(pRecal.getValue(), "1") == 0) {
       tcal.ok = false;
@@ -1056,9 +1056,14 @@ bool readRaw(TS_Point &p, int minZ = 400) {
 }
 
 int touchMinZ() {
-  static const int16_t levels[] = {500, 400, 300, 200, 120};
-  return levels[constrain(cfg.touchSens, 1, 5) - 1];
+  // 6 to 8 are for very light fingers; the lowest levels may let the odd stray reading through.
+  static const int16_t levels[] = {500, 400, 300, 200, 120, 80, 50, 30};
+  return levels[constrain(cfg.touchSens, 1, 8) - 1];
 }
+
+// How many good readings a quick tap needs before it counts. The lightest levels accept two, since
+// a feather-light tap gives the chip only a few readable moments.
+int touchMinReadings() { return cfg.touchSens >= 6 ? 2 : 3; }
 
 bool readTouch(int &x, int &y, int &z) {
   TS_Point p;
@@ -1304,19 +1309,21 @@ void handleTouch() {
   if (ms < 5000) return;  // let the touch controller settle after power-up
   if (!touchDown) {
     // A quick tap can be over in a few hundredths of a second, less than one pass of the main loop.
-    // So the moment the panel reports contact, read it rapidly for 30 ms. At least three good
-    // readings are needed, which a real finger gives easily and stray noise doesn't.
+    // So the moment the panel reports contact, read it rapidly for 30 ms (40 ms at the lightest
+    // levels). At least three good readings are needed (two at levels 6 to 8), which a real finger
+    // gives easily and stray noise doesn't.
     if (digitalRead(TOUCH_IRQ) != LOW) return;
     tsN = 0;
     uint32_t seen = 0;
-    while (millis() - ms < 30) {
+    uint32_t burst = cfg.touchSens >= 6 ? 40 : 30;
+    while (millis() - ms < burst) {
       if (readTouch(x, y, z)) {
         touchSample(x, y, z);
         seen = millis();
       }
       delay(2);
     }
-    if (tsN < 3) {
+    if (tsN < touchMinReadings()) {
       tsN = 0;
       return;
     }

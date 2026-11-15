@@ -15,7 +15,7 @@ next few days of your calendar, refreshing every few minutes over Wi-Fi.
   holds the current view for a minute (both times, and switching it off, are in setup)
 - Dims at night (10pm-7am by default); a tap lights it up for 30 seconds
 - Quick, light taps count; if it misses taps or reacts to nothing, change "Touch sensitivity" in
-  setup (1 = firm press, 5 = very light, 4 by default)
+  setup (1 = firm press, 8 = lightest, 4 by default)
 - Everything is set up from your phone, no code changes needed
 
 ## 1. Turn on the display feed in the calendar app
