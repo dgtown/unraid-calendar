@@ -59,8 +59,9 @@ and keeps trying every 30 seconds.
 Flashing over USB at `0x0` erases the Wi-Fi, calendar and touch settings. Once the display is running
 you can update it from a browser instead, and everything is kept:
 
-1. Download the artifact for your board from the latest green **Build display firmware** run and
-   unzip it. Use the file ending in **`-update.bin`**.
+1. Download the newest update file for your board from the
+   [display-latest release](https://github.com/dgtown/unraid-calendar/releases/tag/display-latest):
+   `calendar-display-cyd-update.bin` (or `calendar-display-cyd2usb-update.bin`).
 2. On a computer on the same network, open `http://calendar-display.local/update`. If that name
    doesn't work, use the display's address, shown for a couple of seconds each time it starts
    ("To update later, browse to: http://192.168.x.x/update").

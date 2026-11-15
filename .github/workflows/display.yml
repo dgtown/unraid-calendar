@@ -39,3 +39,25 @@ jobs:
           path: |
             calendar-display-${{ matrix.env }}.bin
             calendar-display-${{ matrix.env }}-update.bin
+
+  # On main, also publish the files as a release so they can be downloaded with a plain link
+  # (no sign-in, no zip): .../releases/download/display-latest/calendar-display-cyd-update.bin
+  release:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: out
+          merge-multiple: true
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view display-latest -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
+            gh release create display-latest -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --latest=false \
+              --title "Display firmware (latest build)" \
+              --notes "Rebuilt on every change to the display firmware; the files below are always the newest. Use the -update.bin file on the display's update page (settings kept). The other file is for a first install over USB at 0x0."
+          gh release upload display-latest out/*.bin -R "$GITHUB_REPOSITORY" --clobber
