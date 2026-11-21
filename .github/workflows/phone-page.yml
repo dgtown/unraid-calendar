@@ -1,0 +1,35 @@
+name: Publish phone page
+
+# Publishes phone/ (the "Send to display" page for the Bluetooth display) to GitHub Pages:
+# https://dgtown.github.io/unraid-calendar/
+# One-time setup: repository Settings -> Pages -> Source: "GitHub Actions".
+
+on:
+  push:
+    branches: [main]
+    paths: ['phone/**', '.github/workflows/phone-page.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: phone
+      - id: deployment
+        uses: actions/deploy-pages@v4

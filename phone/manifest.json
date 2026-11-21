@@ -1,0 +1,10 @@
+{
+  "name": "Send to display",
+  "short_name": "Display",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#10121a",
+  "theme_color": "#facc28",
+  "icons": [{ "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }]
+}
