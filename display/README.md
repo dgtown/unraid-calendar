@@ -73,6 +73,47 @@ you can update it from a browser instead, and everything is kept:
 The file without `-update` is only for the first install over USB. If an update ever leaves the
 display unusable, flash that one at `0x0` again.
 
+## Bluetooth version (for a desk without usable Wi-Fi)
+
+The `cyd-ble` build (`cyd2usb-ble` for the two-port board) also works where the display can't reach
+the calendar app, such as at work. There it shows a calendar that your Android phone sends over
+Bluetooth from the **Send to display** page, <https://dgtown.github.io/unraid-calendar/>, which reads an
+Outlook (or any) `.ics` calendar link right on the phone. Nothing goes through the calendar server or
+any other server.
+
+- At start-up it looks for its saved Wi-Fi for 15 seconds. If that network is there (and a calendar
+  address is set), it works exactly like the normal build, Wi-Fi updates included. Otherwise it
+  switches to Bluetooth and shows up as **Calendar-Display**. With no calendar address set it always
+  uses Bluetooth, and setup doesn't open by itself.
+- The display keeps the last calendar it was sent (in flash, so it survives a power cut) and reads the
+  days, week and month views from it. The phone sends a week back and 2 to 8 weeks ahead (up to about
+  300 events); days outside that show as empty.
+- The clock comes from the phone. After a restart it carries on from the last send and the bottom line
+  says "Clock may be off: send from phone" until you send again.
+- Only the first phone that sends is accepted. To use another phone (or after clearing Chrome's data
+  for the page), open setup (hold the screen 5 seconds, let go), tick **Let a different phone send**
+  and Save.
+
+### Phone page
+
+1. Publish your Outlook calendar: Outlook on the web → Settings → Calendar → Shared calendars →
+   Publish a calendar, choose **Can view all details**, and copy the **ICS** link.
+2. On the Pixel, open <https://dgtown.github.io/unraid-calendar/> in Chrome (Menu → Add to Home screen
+   makes it an app icon) and paste the link.
+3. Tap **Send to display**, pick **Calendar-Display**, and wait for "Sent ... events".
+
+If Outlook doesn't let the page read the link, the page says so: open the link in Chrome so the `.ics`
+file downloads, then tap **Use a downloaded .ics file instead** and pick it.
+
+The page lives in `phone/` and is published by the "Publish phone page" workflow. One-time setup:
+repository **Settings → Pages → Source: GitHub Actions**.
+
+### Installing it
+
+The first install of a Bluetooth build is over USB at `0x0` (step 2, using the `calendar-display-cyd-ble`
+artifact). That erases saved settings, so touch calibration runs again. Afterwards, Wi-Fi updates
+work whenever the display is on its Wi-Fi: use `calendar-display-cyd-ble-update.bin`.
+
 ## Troubleshooting
 
 | Bottom line says | Fix |

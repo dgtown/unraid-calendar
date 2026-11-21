@@ -1,0 +1,305 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Send to display</title>
+<meta name="theme-color" content="#facc28">
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<style>
+  :root {
+    --bg: #f6f6f3; --card: #ffffff; --text: #1c1d22; --dim: #6b6f7a; --line: #e2e2dc;
+    --accent: #facc28; --accent-text: #1c1d22; --ok: #1f8a4c; --err: #c0392b; --time: #2563eb;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #10121a; --card: #1a1d27; --text: #f0f0f0; --dim: #969ba5; --line: #2f3442;
+      --accent: #facc28; --accent-text: #141414; --ok: #5fd08a; --err: #ff7a6e; --time: #78beff;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.45 system-ui, sans-serif; }
+  main { max-width: 34rem; margin: 0 auto; padding: 16px; }
+  h1 { font-size: 1.4rem; margin: .4rem 0 1rem; display: flex; align-items: center; gap: .5rem; }
+  h1 .dot { width: .9rem; height: .9rem; border-radius: 3px; background: var(--accent); }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px; margin-bottom: 14px; }
+  label { display: block; font-weight: 600; margin-bottom: .3rem; }
+  .hint { color: var(--dim); font-size: .88rem; margin: .35rem 0 0; }
+  input[type=url], select { width: 100%; font: inherit; padding: .6rem .7rem; border-radius: 8px;
+    border: 1px solid var(--line); background: var(--bg); color: var(--text); }
+  .row { display: flex; gap: .6rem; align-items: center; margin-top: .8rem; flex-wrap: wrap; }
+  button { font: inherit; border-radius: 10px; border: 1px solid var(--line); background: var(--bg);
+    color: var(--text); padding: .55rem .9rem; cursor: pointer; }
+  button.primary { width: 100%; background: var(--accent); color: var(--accent-text); border: 0;
+    font-weight: 700; font-size: 1.1rem; padding: .9rem; }
+  button:disabled { opacity: .55; cursor: default; }
+  #status { min-height: 1.4em; margin: .7rem 0 0; }
+  #status.ok { color: var(--ok); } #status.err { color: var(--err); }
+  progress { width: 100%; height: 8px; margin-top: .5rem; accent-color: var(--accent); }
+  .day { font-weight: 700; margin: .7rem 0 .2rem; }
+  .ev { display: flex; gap: .7rem; padding: .15rem 0; }
+  .ev .t { color: var(--time); min-width: 4.8rem; font-variant-numeric: tabular-nums; }
+  .ev .w { color: var(--dim); font-size: .88rem; }
+  details summary { cursor: pointer; font-weight: 600; }
+  details li { margin: .35rem 0; }
+  code { font-size: .85em; word-break: break-all; }
+</style>
+</head>
+<body>
+<main>
+  <h1><span class="dot"></span>Send to display</h1>
+
+  <div class="card">
+    <label for="url">Calendar link (.ics)</label>
+    <input id="url" type="url" inputmode="url" placeholder="https://outlook.office365.com/owa/calendar/.../calendar.ics" autocomplete="off">
+    <p class="hint">Your Outlook "published calendar" ICS link. It's saved on this phone only.</p>
+    <div class="row">
+      <button id="pick" type="button">Use a downloaded .ics file instead</button>
+      <input id="file" type="file" accept=".ics,text/calendar" hidden>
+    </div>
+    <p class="hint" id="source"></p>
+  </div>
+
+  <div class="card">
+    <label for="weeks">How far ahead</label>
+    <select id="weeks">
+      <option value="2">2 weeks</option>
+      <option value="4">4 weeks</option>
+      <option value="6" selected>6 weeks</option>
+      <option value="8">8 weeks</option>
+    </select>
+    <p class="hint">The display holds about 300 events; if there are more, it gets the nearest ones.</p>
+  </div>
+
+  <button id="send" class="primary" type="button">Send to display</button>
+  <progress id="progress" value="0" max="1" hidden></progress>
+  <p id="status" role="status"></p>
+
+  <div class="card" id="previewCard" hidden>
+    <label>Sent</label>
+    <div id="preview"></div>
+  </div>
+
+  <div class="card">
+    <details>
+      <summary>Help</summary>
+      <ul>
+        <li><b>Getting the Outlook link:</b> Outlook on the web → Settings → Calendar → Shared calendars →
+          Publish a calendar. Pick your calendar and <i>Can view all details</i> (otherwise every event just says "Busy"),
+          then Publish and copy the <b>ICS</b> link.</li>
+        <li><b>"Outlook won't let this page read the link":</b> open the ICS link in Chrome so it downloads,
+          then tap <i>Use a downloaded .ics file instead</i> and pick it (it's in Downloads).</li>
+        <li><b>Can't find the display:</b> it only listens for a phone when it isn't on its home Wi-Fi. Turn on
+          Bluetooth and Location on the phone, and keep within a few metres.</li>
+        <li><b>"The display knows a different phone":</b> the display only takes calendars from the first phone that
+          sent one. On the display, hold the screen for 5 seconds, let go, join the <i>Calendar-Setup</i> Wi-Fi,
+          tick <i>Let a different phone send</i> and Save. Clearing this site's data in Chrome has the same effect
+          as a new phone.</li>
+        <li>Your calendar goes straight from this phone to the display. It's never sent anywhere else.</li>
+      </ul>
+    </details>
+  </div>
+</main>
+
+<script type="module">
+import ICAL from './vendor/ical.min.js';
+import { parseICS, buildMessages } from './pack.js';
+
+const SERVICE = '6b3f0001-8c1e-4f4a-9a43-7d1c2a6c0de1';
+const RX = '6b3f0002-8c1e-4f4a-9a43-7d1c2a6c0de1';
+const STATUS = '6b3f0003-8c1e-4f4a-9a43-7d1c2a6c0de1';
+const CHUNK = 200;
+const $ = id => document.getElementById(id);
+
+const store = {
+  get(k) { try { return localStorage.getItem(k); } catch { return null; } },
+  set(k, v) { try { localStorage.setItem(k, v); return true; } catch { return false; } },
+};
+
+let key = store.get('display-key');
+if (!key) {
+  key = (crypto.randomUUID ? crypto.randomUUID() : Array.from(crypto.getRandomValues(new Uint8Array(16)), b => b.toString(16).padStart(2, '0')).join(''));
+  store.set('display-key', key);
+}
+$('url').value = store.get('ics-url') || '';
+$('weeks').value = store.get('weeks') || '6';
+$('url').addEventListener('change', () => store.set('ics-url', $('url').value.trim()));
+$('weeks').addEventListener('change', () => store.set('weeks', $('weeks').value));
+
+function say(text, kind = '') {
+  $('status').textContent = text;
+  $('status').className = kind;
+}
+function showSource() {
+  const when = store.get('ics-when');
+  $('source').textContent = store.get('ics-text') && when
+    ? `Last calendar read: ${new Date(+when).toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' })} (${store.get('ics-from') || 'link'})`
+    : '';
+}
+showSource();
+
+function remember(text, from) {
+  if (store.set('ics-text', text)) {
+    store.set('ics-when', String(Date.now()));
+    store.set('ics-from', from);
+  }
+  showSource();
+}
+
+$('pick').addEventListener('click', () => $('file').click());
+$('file').addEventListener('change', async () => {
+  const f = $('file').files[0];
+  if (!f) return;
+  const text = await f.text();
+  if (!/BEGIN:VCALENDAR/i.test(text)) return say("That file isn't a calendar (.ics).", 'err');
+  remember(text, f.name);
+  say(`Got ${f.name}. Now tap Send to display.`, 'ok');
+});
+
+// The newest calendar we can get: the link if it can be read, else the last copy.
+async function getCalendar() {
+  let url = $('url').value.trim().replace(/^webcals?:\/\//i, 'https://');
+  if (url) {
+    store.set('ics-url', $('url').value.trim());
+    try {
+      const res = await fetch(url, { cache: 'no-store' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const text = await res.text();
+      if (!/BEGIN:VCALENDAR/i.test(text)) throw new Error('not a calendar');
+      remember(text, 'link');
+      return text;
+    } catch (err) {
+      const saved = store.get('ics-text');
+      if (saved) {
+        say(`Couldn't read the link (${err.message}), so sending the last copy.`, 'err');
+        return saved;
+      }
+      throw new Error("Outlook won't let this page read the link directly. Open the link in Chrome so it downloads, " +
+        "then tap \"Use a downloaded .ics file instead\" and pick it.");
+    }
+  }
+  const saved = store.get('ics-text');
+  if (saved) return saved;
+  throw new Error('Paste your calendar link first (or pick a downloaded .ics file).');
+}
+
+let device = null;
+
+async function connect() {
+  if (!navigator.bluetooth) throw new Error('This browser has no Bluetooth. Use Chrome on Android.');
+  if (!device) {
+    device = await navigator.bluetooth.requestDevice({ filters: [{ services: [SERVICE] }], optionalServices: [SERVICE] });
+  }
+  const gatt = await device.gatt.connect();
+  const svc = await gatt.getPrimaryService(SERVICE);
+  const rx = await svc.getCharacteristic(RX);
+  const st = await svc.getCharacteristic(STATUS);
+  const replies = [];
+  let waiter = null;
+  st.addEventListener('characteristicvaluechanged', e => {
+    const msg = new TextDecoder().decode(e.target.value);
+    if (waiter) { const w = waiter; waiter = null; w(msg); } else replies.push(msg);
+  });
+  await st.startNotifications();
+  const reply = (ms = 10000) => new Promise((resolve, reject) => {
+    if (replies.length) return resolve(replies.shift());
+    const t = setTimeout(() => { waiter = null; reject(new Error("The display didn't answer.")); }, ms);
+    waiter = msg => { clearTimeout(t); resolve(msg); };
+  });
+  return { gatt, rx, reply };
+}
+
+const enc = new TextEncoder();
+async function writeLine(rx, line) {
+  const bytes = enc.encode(line + '\n');
+  for (let i = 0; i < bytes.length; i += CHUNK) await rx.writeValueWithResponse(bytes.slice(i, i + CHUNK));
+}
+
+function explain(reply) {
+  const why = reply.replace(/^error\s*/, '');
+  if (why === 'locked') return 'The display knows a different phone. See Help below to let this one send.';
+  return `The display said: ${why}.`;
+}
+
+function showPreview(msgs) {
+  const days = msgs.map(l => JSON.parse(l)).filter(m => m.type === 'day');
+  const today = days.findIndex(d => d.date === new Date().toLocaleDateString('en-CA'));
+  const box = $('preview');
+  box.replaceChildren();
+  for (const d of days.slice(Math.max(0, today), Math.max(0, today) + 3)) {
+    const h = document.createElement('div');
+    h.className = 'day';
+    h.textContent = d.long;
+    box.append(h);
+    if (!d.events.length) {
+      const e = document.createElement('div');
+      e.className = 'hint';
+      e.textContent = 'Nothing scheduled';
+      box.append(e);
+    }
+    for (const ev of d.events) {
+      const row = document.createElement('div');
+      row.className = 'ev';
+      const t = document.createElement('span');
+      t.className = 't';
+      t.textContent = ev.time;
+      const body = document.createElement('span');
+      body.textContent = ev.title;
+      if (ev.where) {
+        const w = document.createElement('div');
+        w.className = 'w';
+        w.textContent = ev.where;
+        body.append(w);
+      }
+      row.append(t, body);
+      box.append(row);
+    }
+  }
+  $('previewCard').hidden = false;
+}
+
+$('send').addEventListener('click', async () => {
+  $('send').disabled = true;
+  const bar = $('progress');
+  let link = null;
+  try {
+    // Pick the display first: Chrome only shows its device list right after a tap.
+    say('Pick Calendar-Display in the list...');
+    link = await connect();
+    say('Reading your calendar...');
+    const text = await getCalendar();
+    const now = Date.now();
+    const weeks = +$('weeks').value;
+    const events = parseICS(ICAL, text, now - 8 * 86400000, now + (weeks * 7 + 2) * 86400000);
+    const out = buildMessages(events, { key, now, weeksAhead: weeks });
+
+    say('Sending...');
+    await writeLine(link.rx, out.lines[0]);
+    const hello = await link.reply();
+    if (hello !== 'ready') throw new Error(explain(hello));
+    bar.hidden = false;
+    bar.max = out.lines.length - 1;
+    for (let i = 1; i < out.lines.length; i++) {
+      await writeLine(link.rx, out.lines[i]);
+      bar.value = i;
+    }
+    const done = await link.reply(15000);
+    if (!done.startsWith('ok')) throw new Error(explain(done));
+    const ahead = out.days - 7;
+    say(`Sent ${out.events} events, through ${new Date(out.to + 'T12:00').toLocaleDateString([], { month: 'short', day: 'numeric' })}` +
+        (ahead < weeks * 7 ? ' (that\'s all that fits).' : '.'), 'ok');
+    showPreview(out.lines);
+  } catch (err) {
+    if (err.name === 'NotFoundError') say('No display picked. Is it on and away from its home Wi-Fi?', 'err');
+    else if (err.name === 'NetworkError') { device = null; say("Couldn't connect to the display. Move closer and try again.", 'err'); }
+    else say(err.message, 'err');
+  } finally {
+    try { link?.gatt.disconnect(); } catch { /* already gone */ }
+    bar.hidden = true;
+    $('send').disabled = false;
+  }
+});
+</script>
+</body>
+</html>

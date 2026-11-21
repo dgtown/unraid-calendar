@@ -22,6 +22,11 @@
 #include <SPI.h>
 #include <TFT_eSPI.h>
 #include <vector>
+#include <map>
+#ifdef CAL_BLE
+#include <NimBLEDevice.h>
+#include <LittleFS.h>
+#endif
 
 // ---------------------------------------------------------------------------------------------
 // Board pins (ESP32-2432S028R)
@@ -643,6 +648,434 @@ void drawAll() {
 }
 
 // ---------------------------------------------------------------------------------------------
+// Bluetooth ("phone mode", cyd-ble build only). When the display can't reach the calendar over
+// Wi-Fi (at work, say), it waits for a phone to send the calendar over Bluetooth LE and keeps the
+// last copy in flash. The phone page (phone/index.html, published on GitHub Pages) sends lines of
+// JSON, each ending in "\n":
+//   {"type":"hello","v":1,"key":"<random per phone>","now":<unix s>,"offset":<s east of UTC>,
+//    "updated":"Sat 3:15 PM","from":"2026-11-14","to":"2026-12-26"}
+//   {"type":"day","date":"2026-11-21","off":-18000,"title":"Sat Nov 21","long":"Saturday, November 21",
+//    "events":[ ...same as /api/display... ]}
+//   {"type":"month","ym":"2026-11","title":"November 2026","year":2026,"month":11,"firstWeekday":0,
+//    "days":30,"counts":[...]}
+//   {"type":"end"}
+// and the display answers on the status characteristic: "ready", "ok <days>", or "error <why>".
+// The first phone to send is remembered (its key); others are turned away until "Let a different
+// phone send" is ticked in setup. Everything is then read back through getJson(), so the screens
+// work exactly as they do with the server.
+// ---------------------------------------------------------------------------------------------
+bool phoneMode = false;  // no Wi-Fi calendar: show what the phone sent
+#ifdef CAL_BLE
+static const char *BLE_NAME = "Calendar-Display";
+static const char *BLE_SERVICE = "6b3f0001-8c1e-4f4a-9a43-7d1c2a6c0de1";
+static const char *BLE_RX = "6b3f0002-8c1e-4f4a-9a43-7d1c2a6c0de1";      // phone writes here
+static const char *BLE_STATUS = "6b3f0003-8c1e-4f4a-9a43-7d1c2a6c0de1";  // display answers here
+static const char *PHONE_PAGE = "dgtown.github.io/unraid-calendar";
+static const char *CAL_FILE = "/cal.dat", *CAL_NEW = "/cal.new";
+static const size_t CAL_MAX_BYTES = 48 * 1024;  // two copies (old + incoming) must fit the 128 KB flash area
+static const size_t RX_MAX_LINE = 16 * 1024;
+
+static const char *WD_SHORT[] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
+static const char *WD_LONG[] = {"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"};
+static const char *MON_SHORT[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+static const char *MON_LONG[] = {"January", "February", "March", "April", "May", "June", "July", "August",
+                                 "September", "October", "November", "December"};
+
+bool fsReady = false, clockStale = false, haveSync = false;
+String phoneKey, syncUpdated, syncFrom, syncTo;
+std::map<String, uint32_t> calIndex;  // "2026-11-21" or "2026-11" -> where its JSON starts in CAL_FILE
+
+NimBLECharacteristic *bleStatusChr = nullptr;
+SemaphoreHandle_t rxLock = nullptr;
+std::string rxBuf;
+volatile bool rxOverflow = false, bleConnected = false, bleConnectChanged = false;
+
+// Receiving
+bool syncing = false, syncFailed = false;
+File syncFile;
+size_t syncBytes = 0;
+int syncDays = 0;
+uint32_t syncNow = 0, syncAtMs = 0;
+int32_t syncOffset = 0;
+String syncKey;
+
+// Days since 1970-01-01 <-> calendar date.
+long dayNumber(int y, int m, int d) {
+  y -= m <= 2;
+  long era = (y >= 0 ? y : y - 399) / 400;
+  long yoe = y - era * 400;
+  long doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+  long doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+  return era * 146097 + doe - 719468;
+}
+void dateOf(long z, int &y, int &m, int &d) {
+  z += 719468;
+  long era = (z >= 0 ? z : z - 146096) / 146097, doe = z - era * 146097;
+  long yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365, doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+  long mp = (5 * doy + 2) / 153;
+  d = doy - (153 * mp + 2) / 5 + 1;
+  m = mp < 10 ? mp + 3 : mp - 9;
+  y = yoe + era * 400 + (m <= 2 ? 1 : 0);
+}
+int weekdayOf(long z) { return (int)(((z % 7) + 11) % 7); }  // 0 = Sunday (1970-01-01 was a Thursday)
+String isoDate(long z) {
+  int y, m, d;
+  dateOf(z, y, m, d);
+  char buf[12];
+  snprintf(buf, sizeof buf, "%04d-%02d-%02d", y, m, d);
+  return buf;
+}
+bool parseIsoDate(const String &s, long &z) {
+  int y, m, d;
+  if (s.length() != 10 || sscanf(s.c_str(), "%4d-%2d-%2d", &y, &m, &d) != 3 || m < 1 || m > 12 || d < 1 || d > 31)
+    return false;
+  z = dayNumber(y, m, d);
+  return true;
+}
+long todayNumber() {
+  long t = localSeconds();
+  return t < 0 ? -1 : t / 86400;
+}
+
+void bleReply(const String &s) {
+  Serial.println("Bluetooth: " + s);
+  if (!bleStatusChr) return;
+  bleStatusChr->setValue(std::string(s.c_str()));
+  if (bleConnected) bleStatusChr->notify();
+}
+
+class RxCallbacks : public NimBLECharacteristicCallbacks {
+  void onWrite(NimBLECharacteristic *c) override {
+    NimBLEAttValue v = c->getValue();
+    xSemaphoreTake(rxLock, portMAX_DELAY);
+    if (rxBuf.size() + v.length() > RX_MAX_LINE * 2) {
+      rxBuf.clear();
+      rxOverflow = true;
+    } else {
+      rxBuf.append(reinterpret_cast<const char *>(v.data()), v.length());
+    }
+    xSemaphoreGive(rxLock);
+  }
+};
+class ServerCallbacks : public NimBLEServerCallbacks {
+  void onConnect(NimBLEServer *) override {
+    bleConnected = true;
+    bleConnectChanged = true;
+  }
+  void onDisconnect(NimBLEServer *) override {
+    bleConnected = false;
+    bleConnectChanged = true;
+  }
+};
+
+// Scans CAL_FILE once and notes where each day's and month's JSON starts.
+void buildIndex() {
+  calIndex.clear();
+  File f = LittleFS.open(CAL_FILE, "r");
+  if (!f) return;
+  String key;
+  bool inKey = true;
+  uint8_t buf[256];
+  uint32_t pos = 0;
+  int n;
+  while ((n = f.read(buf, sizeof buf)) > 0) {
+    for (int i = 0; i < n; i++, pos++) {
+      char c = buf[i];
+      if (inKey) {
+        if (c == ' ') {
+          calIndex[key] = pos + 1;
+          inKey = false;
+        } else if (c != '\n' && key.length() < 12) {
+          key += c;
+        }
+      } else if (c == '\n') {
+        inKey = true;
+        key = "";
+      }
+    }
+  }
+  f.close();
+}
+
+// Reads one saved day or month ("2026-11-21" / "2026-11") into doc.
+bool readSaved(const String &key, JsonDocument &doc) {
+  auto it = calIndex.find(key);
+  if (it == calIndex.end()) return false;
+  File f = LittleFS.open(CAL_FILE, "r");
+  if (!f) return false;
+  bool ok = f.seek(it->second) && !deserializeJson(doc, f);
+  f.close();
+  return ok;
+}
+
+void loadPhoneState() {
+  prefs.begin("ble", true);
+  phoneKey = prefs.getString("key", "");
+  haveSync = prefs.getBool("have", false);
+  uint32_t now = prefs.getUInt("now", 0);
+  utcOffset = prefs.getInt("off", 0);
+  syncUpdated = prefs.getString("upd", "");
+  syncFrom = prefs.getString("from", "");
+  syncTo = prefs.getString("to", "");
+  prefs.end();
+  if (haveSync && now && !serverNow) {  // no clock after a restart: start from the last sync and say so
+    serverNow = now;
+    syncedAtMs = millis();
+    clockStale = true;
+  }
+  buildIndex();
+}
+
+void savePhoneState() {
+  prefs.begin("ble", false);
+  prefs.putString("key", phoneKey);
+  prefs.putBool("have", haveSync);
+  prefs.putUInt("now", syncNow);
+  prefs.putInt("off", syncOffset);
+  prefs.putString("upd", syncUpdated);
+  prefs.putString("from", syncFrom);
+  prefs.putString("to", syncTo);
+  prefs.end();
+}
+
+void forgetPhone() {
+  prefs.begin("ble", false);
+  prefs.remove("key");
+  prefs.end();
+}
+
+void startPhoneMode() {
+  phoneMode = true;
+  WiFi.disconnect(true);
+  WiFi.mode(WIFI_OFF);  // leaves the radio (and memory) to Bluetooth
+  fsReady = LittleFS.begin(true);
+  if (!fsReady) Serial.println("Bluetooth: flash storage unavailable, nothing will be kept after a restart");
+  loadPhoneState();
+
+  rxLock = xSemaphoreCreateMutex();
+  NimBLEDevice::init(BLE_NAME);
+  NimBLEDevice::setMTU(517);
+  NimBLEServer *server = NimBLEDevice::createServer();
+  server->setCallbacks(new ServerCallbacks());
+  NimBLEService *svc = server->createService(BLE_SERVICE);
+  NimBLECharacteristic *rx = svc->createCharacteristic(BLE_RX, NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR);
+  rx->setCallbacks(new RxCallbacks());
+  bleStatusChr = svc->createCharacteristic(BLE_STATUS, NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY);
+  bleStatusChr->setValue(std::string("idle"));
+  svc->start();
+  NimBLEAdvertising *adv = NimBLEDevice::getAdvertising();
+  adv->addServiceUUID(BLE_SERVICE);
+  adv->setScanResponse(true);  // the name goes in the scan response (no room next to a 128-bit UUID)
+  adv->start();
+  Serial.println("Bluetooth: advertising as " + String(BLE_NAME));
+}
+
+void showPhoneWelcome() {
+  drawMessage("Bluetooth mode", {
+    "No Wi-Fi calendar here, so this display shows what your phone sends.",
+    "1. On your phone, open:",
+    String(">") + PHONE_PAGE,
+    String("2. Tap Send and pick ") + BLE_NAME + ".",
+  });
+}
+
+void endSync(const String &why) {
+  if (syncFile) syncFile.close();
+  LittleFS.remove(CAL_NEW);
+  syncing = false;
+  bleReply("error " + why);
+  if (haveData) setStatus("Phone: " + why, true);
+}
+
+// One line of JSON from the phone.
+void handlePhoneLine(const std::string &line) {
+  JsonDocument d;
+  if (deserializeJson(d, line)) {
+    if (syncing) endSync("bad data, send again");
+    else bleReply("error bad data");
+    return;
+  }
+  String type = d["type"] | "";
+  if (type == "hello") {
+    String key = d["key"] | "";
+    if (key.length() < 8) return bleReply("error no key");
+    if (phoneKey.length() && key != phoneKey) {
+      if (haveData) setStatus("Another phone tried to send (see setup)", true);
+      return bleReply("error locked");
+    }
+    if (!fsReady) return bleReply("error no storage");
+    if (syncFile) syncFile.close();
+    syncFile = LittleFS.open(CAL_NEW, "w");
+    if (!syncFile) return bleReply("error can't save");
+    syncing = true;
+    syncKey = key;
+    syncBytes = 0;
+    syncDays = 0;
+    syncNow = d["now"] | 0;
+    syncAtMs = millis();
+    syncOffset = d["offset"] | 0;
+    syncUpdated = d["updated"] | "";
+    syncFrom = d["from"] | "";
+    syncTo = d["to"] | "";
+    if (haveData) setStatus("Receiving from phone...", false);
+    return bleReply("ready");
+  }
+  if (!syncing) return bleReply("error say hello first");
+  if (type == "day" || type == "month") {
+    String key = type == "day" ? (d["date"] | "") : (d["ym"] | "");
+    if (key.length() != (type == "day" ? 10u : 7u) || key.indexOf(' ') >= 0) return endSync("bad date");
+    d.remove("type");
+    d.remove("date");
+    d.remove("ym");
+    size_t len = measureJson(d) + key.length() + 2;
+    if (syncBytes + len > CAL_MAX_BYTES) return endSync("too much, send fewer weeks");
+    syncFile.print(key);
+    syncFile.print(' ');
+    serializeJson(d, syncFile);
+    syncFile.print('\n');
+    syncBytes += len;
+    if (type == "day") syncDays++;
+    return;
+  }
+  if (type == "end") {
+    syncFile.close();
+    syncing = false;
+    LittleFS.remove(CAL_FILE);
+    if (!LittleFS.rename(CAL_NEW, CAL_FILE)) return bleReply("error can't save");
+    if (phoneKey.isEmpty()) phoneKey = syncKey;  // the first phone to send is remembered
+    haveSync = true;
+    savePhoneState();
+    buildIndex();
+    if (syncNow) {  // the phone's clock, as it was at hello
+      serverNow = syncNow;
+      syncedAtMs = syncAtMs;
+      utcOffset = syncOffset;
+      clockStale = false;
+    }
+    bool first = !haveData;
+    if (first) tft.fillScreen(C_BG);
+    nextFetchInMs = 0;  // reload from flash now
+    lastFetchMs = millis();
+    bleReply("ok " + String(syncDays));
+    return;
+  }
+  bleReply("error unknown message");
+}
+
+void bleLoop() {
+  if (!phoneMode) return;
+  if (bleConnectChanged) {
+    bleConnectChanged = false;
+    if (!bleConnected && syncing) endSync("disconnected before finishing");
+    else if (haveData && !syncing) setStatus(bleConnected ? "Phone connected" : "", false);
+  }
+  if (rxOverflow) {
+    rxOverflow = false;
+    if (syncing) endSync("data too long, send again");
+  }
+  for (int i = 0; i < 4; i++) {  // a few lines per pass, so touch stays responsive
+    std::string line;
+    xSemaphoreTake(rxLock, portMAX_DELAY);
+    size_t nl = rxBuf.find('\n');
+    if (nl != std::string::npos) {
+      line = rxBuf.substr(0, nl);
+      rxBuf.erase(0, nl + 1);
+    }
+    xSemaphoreGive(rxLock);
+    if (nl == std::string::npos) break;
+    if (line.size() > RX_MAX_LINE) {
+      if (syncing) endSync("data too long, send again");
+      continue;
+    }
+    if (!line.empty()) handlePhoneLine(line);
+  }
+}
+
+// One day in the same shape as the server's /api/display, from what the phone sent.
+void addSavedDay(JsonArray arr, long z, long today, int32_t &offset) {
+  JsonObject o = arr.add<JsonObject>();
+  JsonDocument d;
+  String date = isoDate(z);
+  if (readSaved(date, d)) {
+    for (JsonPair kv : d.as<JsonObject>()) o[kv.key()] = kv.value();
+    if (z == today && d["off"].is<int32_t>()) offset = d["off"];  // keeps the clock right across a DST change
+  } else {
+    int y, m, dd, wd = weekdayOf(z);
+    dateOf(z, y, m, dd);
+    o["title"] = String(WD_SHORT[wd]) + " " + MON_SHORT[m - 1] + " " + dd;
+    o["long"] = String(WD_LONG[wd]) + ", " + MON_LONG[m - 1] + " " + dd;
+    o["events"].to<JsonArray>();
+  }
+  long rel = z - today;
+  o["label"] = rel == 0 ? "Today" : rel == 1 ? "Tomorrow" : rel == -1 ? "Yesterday" : WD_SHORT[weekdayOf(z)];
+}
+
+void addSavedMonth(JsonObject o, int y, int m, long today) {
+  char ym[8];
+  snprintf(ym, sizeof ym, "%04d-%02d", y, m);
+  JsonDocument d;
+  if (readSaved(ym, d)) {
+    for (JsonPair kv : d.as<JsonObject>()) o[kv.key()] = kv.value();
+  } else {
+    o["title"] = String(MON_LONG[m - 1]) + " " + y;
+    o["counts"].to<JsonArray>();
+  }
+  long first = dayNumber(y, m, 1);
+  int ndays = (m == 12 ? dayNumber(y + 1, 1, 1) : dayNumber(y, m + 1, 1)) - first;
+  o["year"] = y;
+  o["month"] = m;
+  o["firstWeekday"] = weekdayOf(first);
+  o["days"] = ndays;
+  JsonArray counts = o["counts"];
+  while ((int)counts.size() < ndays) counts.add(0);
+  o["today"] = today >= first && today < first + ndays ? today - first + 1 : 0;
+}
+
+String queryParam(const String &path, const char *name) {
+  String key = String(name) + "=";
+  int q = path.indexOf('?');
+  while (q >= 0) {
+    int s = q + 1, e = path.indexOf('&', s);
+    String part = path.substring(s, e < 0 ? path.length() : e);
+    if (part.startsWith(key)) return part.substring(key.length());
+    q = e;
+  }
+  return "";
+}
+
+// Answers the paths getJson() would fetch, from what the phone sent.
+bool localJson(const String &path, JsonDocument &doc) {
+  if (!haveSync) return false;  // the welcome screen says what to do
+  long today = todayNumber();
+  int q = path.indexOf('?');
+  String base = q < 0 ? path : path.substring(0, q);
+  if (base == "/api/display/month") {
+    String ym = queryParam(path, "ym");
+    int y, m;
+    if (sscanf(ym.c_str(), "%4d-%2d", &y, &m) != 2 || m < 1 || m > 12) return false;
+    addSavedMonth(doc.to<JsonObject>(), y, m, today);
+    return true;
+  }
+  int n = constrain(queryParam(path, "days").toInt(), 1, 14);
+  long first = today;
+  String start = queryParam(path, "start");
+  bool browsing = start.length() && parseIsoDate(start, first);
+  int32_t offset = utcOffset;
+  JsonArray arr = doc["days"].to<JsonArray>();
+  for (int i = 0; i < n; i++) addSavedDay(arr, first + i, today, offset);
+  doc["now"] = nowUtc();
+  doc["offset"] = offset;
+  doc["updated"] = syncUpdated;
+  if (!browsing) {
+    int y, m, d;
+    dateOf(today, y, m, d);
+    addSavedMonth(doc["month"].to<JsonObject>(), y, m, today);
+  }
+  return true;
+}
+#endif
+
+// ---------------------------------------------------------------------------------------------
 // Fetching
 // ---------------------------------------------------------------------------------------------
 String urlEncode(const String &s) {
@@ -677,6 +1110,9 @@ uint32_t fnv(const String &s) {
 
 // GETs a path from the calendar app and parses the JSON. Shows what went wrong in the footer.
 bool getJson(const String &path, JsonDocument &doc, String *body = nullptr) {
+#ifdef CAL_BLE
+  if (phoneMode) return localJson(path, doc);
+#endif
   if (WiFi.status() != WL_CONNECTED) {
     setStatus("No Wi-Fi, retrying (hold 5 s + let go: setup)", true);
     return false;
@@ -791,6 +1227,12 @@ bool fetchCalendar() {
   updatedText = doc["updated"] | "";
   statusText = "";
   statusIsError = false;
+#ifdef CAL_BLE
+  if (phoneMode && clockStale) {  // restarted since the last send: the clock is only a guess
+    statusText = "Clock may be off: send from phone";
+    statusIsError = true;
+  }
+#endif
 
   // Only repaint when something changed ("now" and "updated" change on every fetch).
   doc.remove("now");
@@ -907,6 +1349,14 @@ void runPortal(const char *why) {
   for (WiFiManagerParameter *p : {&hdr, &pUrl, &pToken, &pDays, &pRefresh, &hdr2, &pRotate, &pLinger, &pSens, &pDimFrom,
                                   &pDimTo, &pDimLevel, &pFlip, &pInvert, &pRecal})
     wm.addParameter(p);
+#ifdef CAL_BLE
+  WiFiManagerParameter hdr3("<hr><h3>Bluetooth</h3><p>Away from this Wi-Fi the display shows what your phone sends. "
+                            "Leave the calendar address empty to always use Bluetooth.</p>");
+  WiFiManagerParameter pForget("forget", "Let a different phone send (forget the one it knows)", "1", 2,
+                               "type=\"checkbox\"", WFM_LABEL_AFTER);
+  wm.addParameter(&hdr3);
+  wm.addParameter(&pForget);
+#endif
 
   settingsSaved = false;
   wm.setTitle("Calendar display");
@@ -939,6 +1389,9 @@ void runPortal(const char *why) {
       tcal.ok = false;
       saveTouchCal();
     }
+#ifdef CAL_BLE
+    if (strcmp(pForget.getValue(), "1") == 0) forgetPhone();
+#endif
   }
   drawMessage(settingsSaved ? "Saved" : "Restarting", {"Starting the calendar..."});
   delay(1200);
@@ -955,6 +1408,7 @@ String savedSsid() {
 // Keep trying the saved network in the background (routers can take minutes after a power cut).
 uint32_t lastWifiTryMs = 0;
 void keepWifiUp() {
+  if (phoneMode) return;
   if (WiFi.status() == WL_CONNECTED || millis() - lastWifiTryMs < 30000) return;
   lastWifiTryMs = millis();
   WiFi.disconnect();
@@ -1507,6 +1961,31 @@ void setup() {
   WiFi.setAutoReconnect(true);
   String ssid = savedSsid();
   Serial.printf("Calendar: url=%s, saved Wi-Fi=%s\n", cfg.url.c_str(), ssid.c_str());
+#ifdef CAL_BLE
+  // Bluetooth build: use the calendar over Wi-Fi when its network is in reach, otherwise (or when no
+  // calendar address is set) show what the phone sends. Setup never opens by itself.
+  if (cfg.url.isEmpty() || ssid.isEmpty()) {
+    startPhoneMode();
+  } else {
+    drawMessage("Calendar", {"Looking for Wi-Fi", String(">") + ssid, "If it isn't here, Bluetooth takes over."});
+    WiFi.begin();
+    lastWifiTryMs = millis();
+    for (int i = 0; i < 150 && WiFi.status() != WL_CONNECTED; i++) delay(100);
+    if (WiFi.status() != WL_CONNECTED) startPhoneMode();
+  }
+  if (phoneMode) {
+    if (haveSync) {
+      tft.fillScreen(C_BG);
+      drawAll();
+      fetchCalendar();
+    } else {
+      showPhoneWelcome();
+    }
+    lastFetchMs = millis();
+    nextFetchInMs = cfg.refreshMin * 60000UL;
+    return;
+  }
+#else
   // Setup opens by itself only on first start. Later, hold the screen 5 seconds and let go.
   if (cfg.url.isEmpty()) runPortal("first start: no calendar address saved yet");  // restarts when done
 
@@ -1516,6 +1995,7 @@ void setup() {
   for (int i = 0; i < 150 && WiFi.status() != WL_CONNECTED; i++) {  // up to 15 s, then carry on
     delay(100);
   }
+#endif
 
   if (WiFi.status() == WL_CONNECTED) {  // say where the update page is
     drawMessage("Calendar", {"Connected. To update later, browse to:",
@@ -1549,6 +2029,9 @@ void rotateView() {
 
 void loop() {
   handleTouch();
+#ifdef CAL_BLE
+  bleLoop();
+#endif
   if (webStarted) web.handleClient();
   else if (WiFi.status() == WL_CONNECTED) startWeb();
   keepWifiUp();
